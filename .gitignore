@@ -1,0 +1,41 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+graphify-out/
+
+# macOS
+.DS_Store
+
+# Google Ads credentials — developer token, client secret, refresh token, and
+# any recorded API traffic or audit trail. Nothing matching these is in the
+# repo today and the intent is that creds stay OUT of the tree entirely, in
+# env vars. These patterns plus the pre-commit hook are the belt-and-suspenders
+# for the session that first wires real auth.
+google-ads.yaml
+test.yaml
+*.jsonl
+audit.jsonl
+.env
+.env.*
+!.env.example
+credentials.yaml
+credentials.yml
+*.pem
+*.key
+*.p12
+*.pfx
+tokens.json
+refresh_token*
+*.bak
+
+# Python build artifacts
+dist/
+build/
+
+# Ephemeral per-session live-verification harnesses (recreated each session against
+# the real account; never meant to be a tracked deliverable).
+scratchpad/

@@ -1,0 +1,55 @@
+[project]
+name = "mcp-google-ads-safe"
+version = "1.0.0"
+description = "Safety-first MCP server for the Google Ads API: opt-in writes, two-phase draft/confirm, spend rails, Smart Bidding guards, audit log."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Alex Murtha", email = "wvuhskr@users.noreply.github.com" }]
+keywords = ["mcp", "model-context-protocol", "google-ads", "advertising", "paid-media", "ppc", "llm"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Office/Business :: Financial",
+]
+dependencies = ["google-ads>=32.0.0,<33", "mcp>=1.0,<3", "pyyaml>=6.0.3", "Pillow>=12.3,<13"]
+
+[project.urls]
+Homepage = "https://github.com/wvuhskr/mcp-google-ads-safe"
+Repository = "https://github.com/wvuhskr/mcp-google-ads-safe"
+Issues = "https://github.com/wvuhskr/mcp-google-ads-safe/issues"
+Changelog = "https://github.com/wvuhskr/mcp-google-ads-safe/blob/main/CHANGELOG.md"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6", "bandit>=1.9.4"]
+
+[project.scripts]
+mcp-google-ads-safe = "mcp_google_ads_safe.server:main"
+
+[build-system]
+requires = ["setuptools>=84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # FastMCP's own settings model (not our code) trips this on pydantic-settings
+    # >=2.15 at FastMCP(...) construction time (mcp_google_ads_safe/app.py). Message-only
+    # (no category/module) on purpose: a `category:module` filter is imported by pytest
+    # at config-load time, which crashes outright on pydantic-settings <2.15 -- that
+    # version doesn't define IncompleteFieldDefinitionWarning at all.
+    "ignore:Field 'lifespan' has an incomplete definition",
+]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+# Correctness + import hygiene only. No formatter, no style-opinion rules:
+# blind excepts are deliberate (audit hardening must never mask a landed write).
+select = ["E4", "E7", "E9", "F", "I"]
