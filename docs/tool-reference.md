@@ -183,7 +183,7 @@ A bounded September 11, 2026 live discovery check returned a partial page, and a
 one match type, explicit dates and a Manual CPC (manually selected cost-per-click) bid.
 It requires configured locations/language and uses the selected account's currency and
 timezone. This read-only tool creates no saved plan or account changes; absent metrics
-remain unavailable. Network/adult discovery settings do not apply. Offline verified only.
+remain unavailable. Network/adult discovery settings do not apply. A bounded September 11, 2026 live request completed; this does not prove forecast accuracy or acceptance for every input. See [release readiness](release-readiness.md).
 See [keyword forecast contract](keyword-forecasts.md) for inputs and limits.
 
 
