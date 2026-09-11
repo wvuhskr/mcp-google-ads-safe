@@ -4,6 +4,8 @@ Broad Google Ads coverage. Safety gates built into every account change.
 
 Google Ads MCP Safe gives an AI assistant 59 purpose-built tools for researching keywords, inspecting accounts, reporting performance, and preparing controlled changes across Search, Performance Max, and Demand Gen. MCP means Model Context Protocol, the standard that lets an assistant call these tools. This is an unofficial project using Google Ads API v25.
 
+Google Ads MCP Safe is an independent, third-party project created by Alex Murtha. It is not affiliated with, endorsed by, sponsored by, or maintained by Google.
+
 Version 1.0.0 is available here for private owner review. The repository has not been approved for public launch, and no public package release is announced.
 
 ## Why use it?
