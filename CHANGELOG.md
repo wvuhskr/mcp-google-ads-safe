@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 - 2026-09-14
 
 - New tool `undo_change(draft_id)`: drafts the reverse of an applied change from the audit
   log. Rides the normal draft/confirm rails and never dispatches on its own. Reversible:
