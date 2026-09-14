@@ -33,12 +33,8 @@ def _defaults() -> dict:
     return {
         "blocked_terms": [],
         "advertiser_domain": "",
-        "keyword_research": {
-            "geo_target_constant_ids": [],
-            "language_constant_id": None,
-            "keyword_plan_network": "GOOGLE_SEARCH",
-            "include_adult_keywords": False,
-        },
+        "keyword_research": {k: (list(v) if isinstance(v, list) else v)
+                             for k, v in _KEYWORD_RESEARCH_DEFAULTS.items()},
     }
 
 

@@ -3283,26 +3283,43 @@ def _asset_target_parent(cid, target_type, target_id):
     return cid, target_id, parent, campaign
 
 
-def sitelink_state(cid, target_type, target_id):
-    """Complete target and nonremoved sitelink-association snapshot for draft/apply drift checks."""
+# One snapshot reader for all three extension families. Per family: field-type enum name,
+# its numeric id (the third segment of a campaignAssets/adGroupAssets resource name), the
+# asset columns to select, the content parser, and the exact refusal wording.
+_EXTENSION_FAMILIES = {
+    'SITELINK': ('13', ['sitelink_asset.link_text', 'sitelink_asset.description1',
+                        'sitelink_asset.description2', 'sitelink_asset.start_date',
+                        'sitelink_asset.end_date', 'sitelink_asset.ad_schedule_targets'],
+                 'existing_sitelink_content', 'sitelink'),
+    'CALLOUT': ('11', ['callout_asset.callout_text', 'callout_asset.start_date',
+                       'callout_asset.end_date', 'callout_asset.ad_schedule_targets'],
+                'existing_callout_content', 'callout'),
+    'STRUCTURED_SNIPPET': ('12', ['sitelink_asset.link_text', 'callout_asset.callout_text',
+                                  'structured_snippet_asset.header',
+                                  'structured_snippet_asset.values'],
+                           'existing_structured_snippet_content', 'structured snippet'),
+}
+_EXTENSION_ASSET_BASE = ['resource_name', 'type', 'final_urls', 'final_mobile_urls',
+                         'tracking_url_template', 'final_url_suffix', 'url_custom_parameters']
+
+
+def _extension_state(cid, target_type, target_id, field_type_name):
+    """Complete target and nonremoved extension-link snapshot for draft/apply drift checks."""
     from .rails import RailViolation
+    type_id, family_fields, content_fn, label = _EXTENSION_FAMILIES[field_type_name]
     cid, target_id, parent, campaign = _asset_target_parent(cid, target_type, target_id)
-    entity = target_type + '_asset'
-    target_field = target_type
+    entity, target_field = target_type + '_asset', target_type
     fields = ['resource_name', target_field, 'asset', 'field_type', 'status']
-    asset_fields = ['resource_name', 'type', 'final_urls', 'final_mobile_urls',
-                    'tracking_url_template', 'final_url_suffix', 'url_custom_parameters',
-                    'sitelink_asset.link_text',
-                    'sitelink_asset.description1', 'sitelink_asset.description2']
-    asset_fields.extend(('sitelink_asset.start_date', 'sitelink_asset.end_date',
-                         'sitelink_asset.ad_schedule_targets'))
+    asset_fields = _EXTENSION_ASSET_BASE + family_fields
     query = ('SELECT ' + ', '.join([*(entity + '.' + f for f in fields),
                                     *('asset.' + f for f in asset_fields)])
              + f" FROM {entity} WHERE {target_field}.id = {target_id}"
-             + f" AND {entity}.field_type = 'SITELINK' AND {entity}.status != 'REMOVED'")
+             + f" AND {entity}.field_type = '{field_type_name}'"
+             + f" AND {entity}.status != 'REMOVED'")
     rows = gaql_all(query, cid)
     links, seen = [], set()
     kind = 'campaignAssets' if target_type == 'campaign' else 'adGroupAssets'
+    parse_content = globals()[content_fn]
     for row in rows:
         link, asset = _creation_row(row, entity), _creation_row(row, 'asset')
         rn, asset_rn = link.get('resource_name'), link.get('asset')
@@ -3313,13 +3330,13 @@ def sitelink_state(cid, target_type, target_id):
         field_type = _enum_name('AssetFieldTypeEnum', link.get('field_type'))
         asset_type = _enum_name('AssetTypeEnum', asset.get('type_'))
         if (rn in seen or link.get(target_field) != parent['resource_name']
-                or parts != [target_id, asset_rn.rsplit('/', 1)[1], '13']
-                or status not in {'ENABLED', 'PAUSED'} or field_type != 'SITELINK'
-                or asset.get('resource_name') != asset_rn or asset_type != 'SITELINK'):
-            raise RailViolation('sitelink population identity/type/status mismatch')
+                or parts != [target_id, asset_rn.rsplit('/', 1)[1], type_id]
+                or status not in {'ENABLED', 'PAUSED'} or field_type != field_type_name
+                or asset.get('resource_name') != asset_rn or asset_type != field_type_name):
+            raise RailViolation(f'{label} population identity/type/status mismatch')
         seen.add(rn)
         links.append({'resource_name': rn, 'status': status, 'asset': asset_rn,
-                      'content': existing_sitelink_content(asset)})
+                      'content': parse_content(asset)})
     state = {'account': _creation_account(cid), 'parent': parent,
              'links': sorted(links, key=lambda r: r['resource_name'])}
     if target_type == 'ad_group':
@@ -3327,87 +3344,16 @@ def sitelink_state(cid, target_type, target_id):
     return state
 
 
+def sitelink_state(cid, target_type, target_id):
+    return _extension_state(cid, target_type, target_id, 'SITELINK')
+
+
 def callout_state(cid, target_type, target_id):
-    """Complete target and nonremoved callout-link snapshot for draft/apply drift checks."""
-    from .rails import RailViolation
-    cid, target_id, parent, campaign = _asset_target_parent(cid, target_type, target_id)
-    entity, target_field = target_type + '_asset', target_type
-    fields = ['resource_name', target_field, 'asset', 'field_type', 'status']
-    asset_fields = ['resource_name', 'type', 'final_urls', 'final_mobile_urls',
-                    'tracking_url_template', 'final_url_suffix', 'url_custom_parameters',
-                    'callout_asset.callout_text', 'callout_asset.start_date',
-                    'callout_asset.end_date', 'callout_asset.ad_schedule_targets']
-    query = ('SELECT ' + ', '.join([*(entity + '.' + f for f in fields),
-                                    *('asset.' + f for f in asset_fields)])
-             + f" FROM {entity} WHERE {target_field}.id = {target_id}"
-             + f" AND {entity}.field_type = 'CALLOUT' AND {entity}.status != 'REMOVED'")
-    rows = gaql_all(query, cid)
-    links, seen = [], set()
-    kind = 'campaignAssets' if target_type == 'campaign' else 'adGroupAssets'
-    for row in rows:
-        link, asset = _creation_row(row, entity), _creation_row(row, 'asset')
-        rn, asset_rn = link.get('resource_name'), link.get('asset')
-        _validate_resource(rn, kind, cid)
-        _validate_resource(asset_rn, 'assets', cid)
-        parts = rn.rsplit('/', 1)[1].split('~')
-        status = _enum_name('AssetLinkStatusEnum', link.get('status'))
-        field_type = _enum_name('AssetFieldTypeEnum', link.get('field_type'))
-        asset_type = _enum_name('AssetTypeEnum', asset.get('type_'))
-        if (rn in seen or link.get(target_field) != parent['resource_name']
-                or parts != [target_id, asset_rn.rsplit('/', 1)[1], '11']
-                or status not in {'ENABLED', 'PAUSED'} or field_type != 'CALLOUT'
-                or asset.get('resource_name') != asset_rn or asset_type != 'CALLOUT'):
-            raise RailViolation('callout population identity/type/status mismatch')
-        seen.add(rn)
-        links.append({'resource_name': rn, 'status': status, 'asset': asset_rn,
-                      'content': existing_callout_content(asset)})
-    state = {'account': _creation_account(cid), 'parent': parent,
-             'links': sorted(links, key=lambda row: row['resource_name'])}
-    if target_type == 'ad_group':
-        state['campaign'] = campaign
-    return state
+    return _extension_state(cid, target_type, target_id, 'CALLOUT')
 
 
 def structured_snippet_state(cid, target_type, target_id):
-    """Complete target and structured-snippet association snapshot for drift checks."""
-    from .rails import RailViolation
-    cid, target_id, parent, campaign = _asset_target_parent(cid, target_type, target_id)
-    entity, target_field = target_type + '_asset', target_type
-    fields = ['resource_name', target_field, 'asset', 'field_type', 'status']
-    asset_fields = ['resource_name', 'type', 'final_urls', 'final_mobile_urls',
-                    'tracking_url_template', 'final_url_suffix', 'url_custom_parameters',
-                    'sitelink_asset.link_text', 'callout_asset.callout_text',
-                    'structured_snippet_asset.header', 'structured_snippet_asset.values']
-    query = ('SELECT ' + ', '.join([*(entity + '.' + f for f in fields),
-                                    *('asset.' + f for f in asset_fields)])
-             + f" FROM {entity} WHERE {target_field}.id = {target_id}"
-             + f" AND {entity}.field_type = 'STRUCTURED_SNIPPET'"
-             + f" AND {entity}.status != 'REMOVED'")
-    rows = gaql_all(query, cid)
-    links, seen = [], set()
-    kind = 'campaignAssets' if target_type == 'campaign' else 'adGroupAssets'
-    for row in rows:
-        link, asset = _creation_row(row, entity), _creation_row(row, 'asset')
-        rn, asset_rn = link.get('resource_name'), link.get('asset')
-        _validate_resource(rn, kind, cid)
-        _validate_resource(asset_rn, 'assets', cid)
-        parts = rn.rsplit('/', 1)[1].split('~')
-        status = _enum_name('AssetLinkStatusEnum', link.get('status'))
-        field_type = _enum_name('AssetFieldTypeEnum', link.get('field_type'))
-        asset_type = _enum_name('AssetTypeEnum', asset.get('type_'))
-        if (rn in seen or link.get(target_field) != parent['resource_name']
-                or parts != [target_id, asset_rn.rsplit('/', 1)[1], '12']
-                or status not in {'ENABLED', 'PAUSED'} or field_type != 'STRUCTURED_SNIPPET'
-                or asset.get('resource_name') != asset_rn or asset_type != 'STRUCTURED_SNIPPET'):
-            raise RailViolation('structured snippet population identity/type/status mismatch')
-        seen.add(rn)
-        links.append({'resource_name': rn, 'status': status, 'asset': asset_rn,
-                      'content': existing_structured_snippet_content(asset)})
-    state = {'account': _creation_account(cid), 'parent': parent,
-             'links': sorted(links, key=lambda row: row['resource_name'])}
-    if target_type == 'ad_group':
-        state['campaign'] = campaign
-    return state
+    return _extension_state(cid, target_type, target_id, 'STRUCTURED_SNIPPET')
 
 
 def image_error_codes(error):
