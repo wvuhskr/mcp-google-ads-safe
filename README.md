@@ -2,7 +2,7 @@
 
 A Google Ads MCP server that lets an AI assistant change your account, with the brakes built into the server instead of the prompt.
 
-MCP (Model Context Protocol) is the standard that lets assistants like Claude, Codex, or Cursor call tools. Most Google Ads MCP servers are either read-only (Google's own is, on purpose) or hand the assistant raw write access and hope for the best. This one sits in the middle: 59 tools that cover research, reporting, and account changes across Search, Performance Max, and Demand Gen, where every change has to pass a set of checks the assistant cannot talk its way around.
+MCP (Model Context Protocol) is the standard that lets assistants like Claude, Codex, or Cursor call tools. Most Google Ads MCP servers are either read-only (Google's own is, on purpose) or hand the assistant raw write access and hope for the best. This one sits in the middle: 60 tools that cover research, reporting, and account changes across Search, Performance Max, and Demand Gen, where every change has to pass a set of checks the assistant cannot talk its way around.
 
 Independent, third-party project. Not affiliated with, endorsed by, or maintained by Google. Uses Google Ads API v25. MIT licensed.
 
@@ -26,7 +26,8 @@ So the design goal here is simple: the assistant proposes, the server decides wh
 | New campaigns, ad groups, ads created PAUSED | n/a | Some | Yes, always |
 | Local audit log | n/a | Some log applied writes | Logs drafts, refusals, applies, and unknown outcomes |
 | Fresh state re-check at confirm time | n/a | Not found | Yes |
-| Automated tests | Unknown | Usually few or none | 3,830 |
+| Undo for applied changes | n/a | Not found | Yes, drafts the reverse from the audit log |
+| Automated tests | Unknown | Usually few or none | 3,851 |
 
 "Typical community write server" summarizes the open-source write-capable servers I could find on GitHub in September 2026. The best of them ship two or three of these gates. To my knowledge none combine all of them in a maintained project, but I have not audited every repo, and this table is a snapshot, not a scoreboard. The [Google official server](https://developers.google.com/google-ads/api/docs/developer-toolkit/mcp-server) is the right choice if you only need reads and want Google-maintained code.
 
@@ -60,6 +61,8 @@ assistant calls confirm_and_apply(draft_id)
 
 If Google's answer is ambiguous (a timeout after the request left the building), the server records the outcome as unknown and refuses to retry on its own. You read the account and decide.
 
+Changed your mind? `undo_change(draft_id)` reads the audit log, finds what the original change replaced, and drafts the reverse. It is a normal draft: same caps, same allowlists, same confirm step, and a fresh look at the account before anything is sent. Budgets, names, statuses, targets, bids, keyword and negative additions or removals, and schedules can be reversed. A creation that has since been enabled gets paused. Removals and asset uploads are permanent at Google, and undo says so instead of pretending.
+
 Things worth being honest about:
 
 - `confirm_and_apply` is a second call, not a human approval step. Any connected client holding the draft id can confirm it. If you want a person in the loop, do the confirm yourself or run the server in read-only mode and use it for reporting.
@@ -72,7 +75,7 @@ Details and every environment variable: [configuration](docs/configuration.md).
 
 ## Test coverage and live evidence
 
-Every one of the 3,830 tests runs offline against a fake Google Ads API. CI runs them on Ubuntu and macOS across Python 3.12, 3.13, and 3.14 on every push. That proves the request shapes, the safety logic, and the refusal paths. It does not prove Google accepts a given operation on your account.
+Every one of the 3,851 tests runs offline against a fake Google Ads API. CI runs them on Ubuntu and macOS across Python 3.12, 3.13, and 3.14 on every push. That proves the request shapes, the safety logic, and the refusal paths. It does not prove Google accepts a given operation on your account.
 
 Live evidence is uneven and documented per tool. All reporting and lookup tools have been run against a real account. A subset of writes (budget, name, target CPA / ROAS, ad-group CPC, ad-group pause / enable, exact-match keywords, Manual CPC campaign and ad-group creation) has been applied to a real account and read back. Most of the Performance Max, Demand Gen, asset, conversion, and recommendation writes have offline tests only. The [evidence matrix](docs/offline-capability-matrix.md) says which is which. Read it before enabling writes for anything you would not want to fix by hand.
 

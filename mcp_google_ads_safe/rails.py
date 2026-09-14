@@ -786,6 +786,8 @@ def _compile_update(intent):
                         "target_roas is a ratio (2 means 200%)"}
     if has_budget and "affected_campaigns" in budget.preview:
         preview["budget_affected_campaigns"] = budget.preview["affected_campaigns"]
+    if has_budget:
+        preview["current_daily_budget"] = budget.preview["current_daily_budget"]  # for undo
     if scope is not None:
         preview["affected_campaigns"] = scope["attachments"]
     def validate_fn():
