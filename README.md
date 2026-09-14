@@ -8,7 +8,7 @@ Independent, third-party project. Not affiliated with, endorsed by, or maintaine
 
 ## Why another Google Ads MCP?
 
-I run paid media for a living. I wanted an assistant that could pull search terms, draft negatives, and adjust a target CPA on a Monday morning without me worrying that a misread instruction would triple a budget or un-pause a campaign I had killed for a reason. The write-capable servers I found had one or two safeguards each. None had the full set, and the ones that came closest had a single user.
+I manage paid media day to day. I wanted an assistant that could pull search terms, draft negatives, and adjust a target CPA on a Monday morning without me worrying that a misread instruction would triple a budget or un-pause a campaign I had killed for a reason. The write-capable servers I found had one or two safeguards each. None had the full set, and the ones that came closest had a single user.
 
 So the design goal here is simple: the assistant proposes, the server decides whether that proposal is allowed, and nothing reaches Google until a second explicit call says go.
 
