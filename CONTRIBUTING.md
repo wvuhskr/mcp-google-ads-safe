@@ -6,7 +6,7 @@ Thanks for helping improve Google Ads MCP Safe. Small, focused fixes, documentat
 
 Read the [README](README.md), [troubleshooting guide](docs/troubleshooting.md), and [tool reference](docs/tool-reference.md). Search existing issues for the same problem. Use a bug report for unexpected behavior or a feature request to describe a missing capability and its practical benefit.
 
-Suspected security problems belong in the private process described in [SECURITY.md](SECURITY.md), never in a public issue. During private review, use the existing private contact process described there. Do not put sensitive reports in repository issues, even while access is restricted.
+Suspected security problems go through GitHub private vulnerability reporting as described in [SECURITY.md](SECURITY.md), never in a public issue, pull request or discussion.
 
 Never upload sign-in profiles, tokens, keys, real account identifiers, customer information, advertising results, or raw provider responses. Use synthetic examples and remove private details from logs and screenshots.
 

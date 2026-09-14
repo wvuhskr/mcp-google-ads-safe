@@ -1,6 +1,8 @@
 # Release readiness
 
-This source is prepared as version 1.0.0. Final artifact checks and exact public distribution clearance remain separate. The [capability matrix](offline-capability-matrix.md) records operation-level evidence, and the [validation procedure](validation-readiness.md) governs future connected checks.
+Version 1.0.1 is the first public release (2026-09-14). This page is the evidence ledger behind it: what was verified, how, and what was not. Where it says "Codex", that means OpenAI Codex used as the MCP client for a connection check; nothing here depends on that client. The [capability matrix](offline-capability-matrix.md) records operation-level evidence, and the [validation procedure](validation-readiness.md) governs future connected checks.
+
+Since 1.0.0 was reviewed privately, a public-readiness review on 2026-09-14 fixed two High and seven Medium findings (see [CHANGELOG](../CHANGELOG.md)). CI now runs the full suite on Ubuntu and macOS across Python 3.12, 3.13 and 3.14; both pushes on 2026-09-14 passed all six jobs.
 
 Google changed new API access registration on September 9, 2026. The [Google authentication transition note](google-auth-transition.md) records the adopted tokenless client-library route and its remaining connected evidence limits.
 
@@ -24,7 +26,7 @@ A subsequent explicit replacement check created an owner-private backup, renewed
 
 The initial private test policies blocked name lookup and temporary-file creation. Credential-free and dummy-file checks established those causes; corrected policies passed the complete dummy save sequence before successful real execution. Prior failures remain retained. The application helper did not change. A browser completion page is not proof of token exchange or a saved profile.
 
-This proves one Desktop authorization journey from an already created client and a health-only Codex connection on the qualified private Python 3.12 installation. It does not prove from-zero Cloud registration, service-account/key creation, revoked-token recovery, every assistant tool, Claude client setup, broader installation compatibility, or public-release readiness. Existing private Alpha artifacts predate this documentation update and remain historical evidence.
+This proves one Desktop authorization journey from an already created client and a health-only Codex connection on the qualified private Python 3.12 installation. It does not prove from-zero Cloud registration, service-account/key creation, revoked-token recovery, every assistant tool, Claude client setup, or broader installation compatibility. Earlier private Alpha artifacts predate this documentation update and remain historical evidence.
 
 ## Completed bounded fresh-install compatibility evidence
 
@@ -44,16 +46,12 @@ On September 11, 2026, one current keyword-discovery request returned a 50-row p
 
 The first private targeting guard incorrectly expected an enum label where the installed library serialized its integer value. A generated-message check established the test-code mismatch, and the corrected guard passed before the successful attempt. Application code and request payloads were unchanged; the initial failure was retained.
 
-## Remaining release boundaries
+## What is still unverified
 
 | Area | What remains |
 | --- | --- |
-| Authentication and setup | Desktop sign-in, explicit replacement and post-restart health are complete. From-zero Cloud provisioning, service-account/key setup and revoked-token recovery remain unverified alternatives, not additional tests performed for this release. |
-| Installation and compatibility | Fresh Mac installations and complete synthetic suites passed for the three exact Python versions above. Qualify any additional advertised platform/client coverage and verify installation of the final release artifacts; these checks do not prove every dependency combination. |
-| Connected behavior | Current read tools and health-only Codex connection have bounded evidence above. Mutation branches retain their operation-specific historical or synthetic status; no blanket live-write or additional client claim is made. |
-| Final release | Version 1.0.0 and release notes are prepared. Build and inspect exact final distributions, confirm the destination and publisher control, and approve exact public files and hashes before publication. |
-| Privacy | Complete public clearance of the intended source/history and final artifacts while preserving private evidence. |
+| Authentication and setup | Desktop sign-in, explicit replacement and post-restart health are complete. From-zero Cloud provisioning, service-account/key setup and revoked-token recovery remain unverified alternatives. |
+| Installation and compatibility | CI covers Ubuntu and macOS on Python 3.12, 3.13 and 3.14 from a fresh install. Windows is untested. No PyPI package yet; install is from source. |
+| Connected behavior | Current read tools and a health-only MCP client connection have bounded evidence above. Write operations retain their operation-specific historical or synthetic status in the [capability matrix](offline-capability-matrix.md); no blanket live-write claim is made. |
 
-A dedicated security email or private reporting feature is optional and may be added only if it is actually established. Automated publishing, dependency-update workflows, and server cutover are separate operating choices, not universal publication prerequisites.
-
-The bounded results above do not prove installation from a public release, revoked-token recovery, operation-wide provider behavior or public availability. Existing Alpha packages remain private historical evidence and must not be relabeled as the final stable release.
+Security reports go through GitHub private vulnerability reporting (see [SECURITY.md](../SECURITY.md)). Dependency updates arrive weekly via Dependabot.

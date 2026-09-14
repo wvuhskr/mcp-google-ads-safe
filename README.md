@@ -72,7 +72,7 @@ Details and every environment variable: [configuration](docs/configuration.md).
 
 ## Test coverage and live evidence
 
-Every one of the 3,830 tests runs offline against a fake Google Ads API. The 1.0.0 build passed on Python 3.12, 3.13, and 3.14 on macOS Apple Silicon; the current tree has been re-run on 3.14 only. That proves the request shapes, the safety logic, and the refusal paths. It does not prove Google accepts a given operation on your account.
+Every one of the 3,830 tests runs offline against a fake Google Ads API. CI runs them on Ubuntu and macOS across Python 3.12, 3.13, and 3.14 on every push. That proves the request shapes, the safety logic, and the refusal paths. It does not prove Google accepts a given operation on your account.
 
 Live evidence is uneven and documented per tool. All reporting and lookup tools have been run against a real account. A subset of writes (budget, name, target CPA / ROAS, ad-group CPC, ad-group pause / enable, exact-match keywords, Manual CPC campaign and ad-group creation) has been applied to a real account and read back. Most of the Performance Max, Demand Gen, asset, conversion, and recommendation writes have offline tests only. The [evidence matrix](docs/offline-capability-matrix.md) says which is which. Read it before enabling writes for anything you would not want to fix by hand.
 
@@ -92,7 +92,7 @@ Then follow the [setup guide](docs/setup.md) to point `GOOGLE_ADS_YAML` at your 
 
 ## Status
 
-Version 1.0.0. Source install only; no PyPI package yet. CI runs lint, the full test suite, and a high-severity Bandit scan on Ubuntu and macOS across Python 3.12, 3.13, and 3.14. Windows has not been tested.
+Version 1.0.1. Source install only; no PyPI package yet. CI runs lint, the full test suite, and a high-severity Bandit scan on Ubuntu and macOS across Python 3.12, 3.13, and 3.14. Windows has not been tested.
 
 ## Docs
 

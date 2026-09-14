@@ -1,9 +1,42 @@
 # Changelog
 
+## 1.0.1 - 2026-09-14
+
+First public release. A same-day public-readiness review found two High and seven Medium
+issues; all are fixed here. Breaking for nobody: every new control defaults to the old
+behavior or to "off".
+
+Safety:
+- Clearing target CPA or target ROAS on a Performance Max campaign is refused
+  (`PMAX_TARGET_CLEAR`). Raise the target in steps instead.
+- The draft store is serialized with a lock, so two concurrent confirms cannot both dispatch.
+- Only documented sign-in keys are read from the credential YAML; any other key (including
+  `logging`) stops startup.
+- Any Google API call error raised by the mutate RPC is audited as `unknown`, never `error`.
+- Refused confirms for unknown, expired or tampered drafts are audited (`UNKNOWN_DRAFT`,
+  `DRAFT_EXPIRED`, `PLAN_TAMPERED`).
+- A write that landed but failed read-back is audited as `apply_unverified`, not `error`.
+- New `GOOGLE_ADS_MAX_TARGET_CPA` cap, separate from `GOOGLE_ADS_MAX_CPC` (falls back to
+  it when unset).
+- New `GOOGLE_ADS_ALLOW_REMOVE_ENTITY` opt-in (default false) for permanent removal,
+  checked at draft and again at confirm.
+- One generic input guard rejects string arguments that would coerce to JSON null, list
+  or object, for every tool.
+- Report dates must be `YYYY-MM-DD`; geo-target search escapes backslashes.
+
+Project:
+- README rewritten for a public audience with a comparison against other Google Ads MCP
+  servers. SECURITY.md routes reports through GitHub private vulnerability reporting.
+- CI: ruff, the full test suite and a high-severity Bandit scan on Ubuntu and macOS across
+  Python 3.12, 3.13 and 3.14. Dependabot for pip and GitHub Actions.
+- The three extension-state readers collapsed into one; no behavior change.
+- 3,830 tests (was 3,807).
+
 ## 1.0.0 - 2026-09-11
 
-Prepared stable source release. Publication is separate; the operation inventory retains
-explicit distinctions between current reads, historical write evidence and synthetic tests.
+Stable source release, reviewed privately before the public 1.0.1. The operation inventory
+retains explicit distinctions between current reads, historical write evidence and
+synthetic tests.
 
 - Added bounded read and draft/confirm operations for Search, Performance Max,
   Demand Gen, assets, audiences, conversions, recommendations, keyword research and
@@ -37,7 +70,7 @@ mutation branches retain their documented evidence limits.
 Existing private Alpha artifacts predate these documentation changes.
 
 - Verified Desktop initial sign-in, explicit private-profile replacement and restarted
-  Codex health with writes disabled. Service-account provisioning and deliberately
+  health check through an MCP client (OpenAI Codex) with writes disabled. Service-account provisioning and deliberately
   revoked-token recovery remain unverified alternatives.
 - Qualified fresh macOS Apple Silicon installations on Python 3.12.13, 3.13.14 and
   3.14.6 with complete synthetic suites; retained exact dependency resolutions.
