@@ -8,11 +8,15 @@ behavior or to "off".
 
 Safety:
 - Clearing target CPA or target ROAS on a Performance Max campaign is refused
-  (`PMAX_TARGET_CLEAR`). Raise the target in steps instead.
+  (`PMAX_TARGET_CLEAR`). The daily budget still caps spend; this protects cost per result.
+  Raise the target in steps instead. A product choice, not a Google requirement.
 - The draft store is serialized with a lock, so two concurrent confirms cannot both dispatch.
 - Only documented sign-in keys are read from the credential YAML; any other key (including
   `logging`) stops startup.
-- Any Google API call error raised by the mutate RPC is audited as `unknown`, never `error`.
+- Transport-class failures from the mutate RPC (Unavailable, DeadlineExceeded, Internal,
+  Unknown, Aborted, Cancelled, ResourceExhausted) are audited as `unknown`. Definite
+  server-side rejections (InvalidArgument, PermissionDenied, NotFound, Unauthenticated and
+  similar) stay `error`, since Google answered and saved nothing.
 - Refused confirms for unknown, expired or tampered drafts are audited (`UNKNOWN_DRAFT`,
   `DRAFT_EXPIRED`, `PLAN_TAMPERED`).
 - A write that landed but failed read-back is audited as `apply_unverified`, not `error`.
