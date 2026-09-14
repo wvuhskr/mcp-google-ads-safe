@@ -12,7 +12,7 @@ Preview identifies the account, campaign, list/name, mode, existing campaign and
 
 Complete reads fingerprint account, parent, settings, list content, campaign criterion inventory and list connections. Confirmation recompiles and refuses drift. One atomic GoogleAdsService request creates the criterion with `partial_failure=False`; no direct mutation RPC or automatic retry. Strict same-account compound result identity must match the existing campaign before saved reads. Saved content plus campaign/list/settings are reread; races or failed verification consume the draft and report applied but unverified. No repair or retry is attempted. Validation-only dispatch performs no saved reads.
 
-In a Codex chat, use `run_gaql` with the selected account and these discovery queries. Discovery does not authorize a write:
+In your MCP client's chat, use `run_gaql` with the selected account and these discovery queries. Discovery does not authorize a write:
 
 ```sql
 SELECT campaign.id, campaign.resource_name, campaign.name, campaign.status,

@@ -8,7 +8,7 @@ perform. The inventory was obtained by parsing `mcp_google_ads_safe/tools.py`
 without importing the package or starting a client.
 
 September 11, 2026 evidence update: the bounded current Desktop sign-in, replacement,
-restarted Codex health and exact Mac installation checks are recorded in
+restarted MCP-client health (OpenAI Codex) and exact Mac installation checks are recorded in
 [release readiness](release-readiness.md). The original inventory and other historical
 operation evidence below remain unchanged. Passing synthetic tests does not upgrade
 a mutation row to live-provider proof.
@@ -48,7 +48,7 @@ state. Refusals below are representative trust-boundary checks, not exhaustive.
 
 | Registered operation | Source path | Current evidence | Future capability | Validation-only | Prerequisite and bounded shape | Required proof and provider unknowns | Refusal and residue |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `health_check` | `tools.py:37` -> preflight and account list | Bounded live read, 2026-09-11 Desktop profile and restarted health-only Codex connection; one selected account | Needs live | No | Approved credentials and configured manager ancestry | Fresh preflight and allowlisted account inventory; auth, access and ancestry can drift | Provider/auth failure propagates; read only, no residue |
+| `health_check` | `tools.py:37` -> preflight and account list | Bounded live read, 2026-09-11 Desktop profile and restarted health-only MCP client connection; one selected account | Needs live | No | Approved credentials and configured manager ancestry | Fresh preflight and allowlisted account inventory; auth, access and ancestry can drift | Provider/auth failure propagates; read only, no residue |
 | `run_gaql` | `tools.py:46` -> `client.gaql` | Historical live read for selected queries, not arbitrary GAQL | Needs live | No | Read-allowlisted account, admitted query, follow bound page tokens | Query-specific complete pages; acceptance never generalizes to another query | Denied account/query refuses; read only |
 | `confirm_and_apply` | `tools.py:117` -> `rails.apply_draft` | Historical applied plus independent readback for named M1 canaries | Local only for orchestration; underlying mutation needs live | Internal mutation path only | Unexpired exact draft in same process; every live write separately approved | Audit record, exactly one dispatch, operation-specific result and independent saved-state read | Expired/tampered/drifted/used draft refuses; unknown outcome consumes draft and is investigated by reads, never retried |
 | `get_account_info` | `tools.py:144` -> `client.account_info` | Historical live read, 2026-09-07 | Needs live | No | One read-allowlisted client account | Exact current identity, currency, time zone and status | Denied/missing account refuses; read only |

@@ -88,7 +88,7 @@ upgrade old evidence merely because the current tool has the same name.
 ## Current readiness decision
 
 The source has a statically reconciled 59-tool inventory and extensive retained offline
-evidence. Desktop sign-in, explicit replacement and restarted Codex health are verified
+evidence. Desktop sign-in, explicit replacement and restarted MCP-client (OpenAI Codex) health are verified
 for one account. Fresh Mac installations on Python 3.12.13, 3.13.14 and 3.14.6 each
 passed the full synthetic suite with their recorded dependency resolutions. These
 bounded checks do not establish operation-specific provider behavior, from-zero Cloud
