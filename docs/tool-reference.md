@@ -1,7 +1,7 @@
 # mcp-google-ads-safe
 
 An unofficial Model Context Protocol (MCP) server, a standard way for an assistant to call
-tools, for Google Ads API v25. The current source contains 59 tools: the 25 Milestone 1 tools for account and
+tools, for Google Ads API v25. The current source contains 60 tools: `undo_change` (below), the 25 Milestone 1 tools for account and
 performance reads, campaign and ad-group updates, status changes, keyword and negative
 keyword work, location exclusions, and campaign schedules, plus four Milestone 2 reads:
 `list_extensions`, `get_policy_issues`, `get_conversion_actions`, and `list_recommendations`.
@@ -85,6 +85,29 @@ The four read additions have offline coverage and historical September 7, 2026 l
 query acceptance within their stated filters. That record covers the prior policy
 query; current bounded read evidence is recorded in [release readiness](release-readiness.md). See
 [docs/m2-verification.md](m2-verification.md).
+
+## Undo
+
+`undo_change(draft_id)` drafts the reverse of an applied change. It reads the local audit
+log for the "apply" event of that draft, rebuilds the before-state from the preview the
+original tool recorded, and calls the matching tool in reverse. The result is an ordinary
+draft: writes must be enabled, the account must be write-allowlisted, caps and opt-ins
+apply, and `confirm_and_apply` is still required. Undo itself never sends anything.
+
+| Original tool | Reverse |
+| --- | --- |
+| `update_campaign`, `update_ad_group` | Restores the recorded previous budget, name, status, target CPA / ROAS, or CPC. A target that had no previous value is cleared. An ad-group CPC that had no previous value cannot be reversed (no tool clears a CPC). |
+| `pause_entity`, `enable_entity` | Sets the recorded previous status. |
+| `draft_keywords`, `add_negative_keywords` | Removes the criteria the apply created (ids from the recorded result). |
+| `remove_keywords`, `remove_negative_keywords` | Re-adds the removed text and match type. New criterion ids; keyword-level bids are not restored. |
+| `update_keyword_bid` | Restores the recorded previous bid. |
+| `set_campaign_schedule` | Restores the recorded previous week. Bid modifiers on windows are not restored; a campaign that had no schedule cannot be returned to 24/7 by undo. |
+| `draft_campaign`, `create_ad_group`, `create_pmax_campaign`, `create_demand_gen_campaign` | Pauses the created campaign or ad group if it has been enabled since. A still-paused creation is reported as nothing to reverse. |
+| Removals, asset uploads, audiences, conversion actions, recommendation actions, geo changes | Reported as not reversible with the reason. |
+
+Refusals: no audit record (`UNKNOWN_DRAFT`), never applied (`NOT_APPLIED`), original outcome
+unknown (`OUTCOME_UNKNOWN`), an undo draft already exists (`ALREADY_UNDONE`), or the needed
+before-state was not recorded (`NOT_REVERSIBLE`). Evidence: offline synthetic only.
 
 ## Current safety model
 

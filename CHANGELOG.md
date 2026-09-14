@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- New tool `undo_change(draft_id)`: drafts the reverse of an applied change from the audit
+  log. Rides the normal draft/confirm rails and never dispatches on its own. Reversible:
+  campaign and ad-group updates, pause/enable, keyword and negative additions or removals,
+  keyword bids, schedules; enabled creations are paused. Removals and uploads are reported
+  as permanent. See the [tool reference](docs/tool-reference.md#undo).
+- Combined `update_campaign` previews record `current_daily_budget` so a budget change made
+  alongside other fields can be undone.
+- 3,853 tests. Tool count 60.
+
 ## 1.0.1 - 2026-09-14
 
 First public release. A same-day public-readiness review found two High and seven Medium

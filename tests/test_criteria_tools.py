@@ -357,7 +357,7 @@ def test_registered_inventory_and_call(fake_client, monkeypatch):
             "attach_shared_set", "add_to_shared_set", "create_shared_negative_set", "draft_demand_gen_ad", "create_demand_gen_campaign", "set_listing_group_filter", "remove_asset_group_asset", "add_asset_group_assets", "update_asset_group", "create_asset_group", "create_pmax_campaign", "draft_campaign", "create_ad_group", "draft_responsive_search_ad", "draft_sitelinks", "create_callouts", "create_structured_snippets", "remove_extension", "upload_image_asset", "upload_text_asset", "create_custom_audience", "add_audience_targeting", "create_conversion_action", "set_conversion_action_primary_status", "create_portfolio_bidding_strategy", "apply_recommendation", "dismiss_recommendation",
         "list_extensions", "get_policy_issues", "get_conversion_actions", "list_recommendations",
         "discover_keywords", "get_keyword_forecasts", "health_check",
-        "run_gaql",
+        "run_gaql", "undo_change",
         "update_campaign",
         "update_ad_group",
         "pause_entity",
@@ -379,7 +379,7 @@ def test_registered_inventory_and_call(fake_client, monkeypatch):
     async def check():
         inventory = await mcp.list_tools()
         assert {t.name for t in inventory} == expected
-        assert len(inventory) == 59
+        assert len(inventory) == 60
         for tool in inventory:
             json.dumps(tool.input_schema)
         monkeypatch.setattr(client, "list_accounts", lambda: [{"customer_id": CID}])

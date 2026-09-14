@@ -13,7 +13,7 @@ from tests.test_final_fixes import mapped_error
 
 NAMES = set('''attach_shared_set add_to_shared_set create_shared_negative_set draft_demand_gen_ad create_demand_gen_campaign set_listing_group_filter remove_asset_group_asset add_asset_group_assets update_asset_group create_asset_group create_pmax_campaign create_portfolio_bidding_strategy get_keyword_forecasts discover_keywords dismiss_recommendation apply_recommendation remove_entity remove_extension create_structured_snippets create_callouts draft_sitelinks draft_responsive_search_ad draft_campaign create_ad_group list_extensions get_policy_issues get_conversion_actions list_recommendations
 health_check run_gaql update_campaign update_ad_group pause_entity enable_entity
-confirm_and_apply get_account_info get_campaign_performance get_ad_performance
+confirm_and_apply undo_change get_account_info get_campaign_performance get_ad_performance
 get_keyword_performance get_search_terms get_geo_performance get_negative_keywords
 search_geo_targets get_entities list_accounts draft_keywords remove_keywords
 update_keyword_bid add_negative_keywords remove_negative_keywords exclude_geo_target
@@ -141,7 +141,7 @@ def test_exact_inventory_and_original_schemas():
     wrapped_tools = asyncio.run(app.mcp.list_tools())
     reference = asyncio.run(plain.list_tools())
     assert {t.name for t in wrapped_tools} == NAMES
-    assert len(wrapped_tools) == 59
+    assert len(wrapped_tools) == 60
     assert {t.name: t.model_dump() for t in wrapped_tools} == {
         t.name: t.model_dump() for t in reference}
     for name in NAMES:

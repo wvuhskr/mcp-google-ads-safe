@@ -120,6 +120,18 @@ def confirm_and_apply(draft_id: str) -> dict:
 
 
 @mcp.tool()
+def undo_change(draft_id: str) -> dict:
+    """Draft the reverse of an already-applied change, found by its draft_id in the audit
+    log. Returns a NEW draft that still needs confirm_and_apply; nothing is sent to Google
+    here. Reversible: campaign/ad-group updates (budget, name, status, targets, CPC),
+    pause/enable, keyword and negative additions or removals, keyword bids, schedules, and
+    enabled creations (paused). Removals and asset uploads are permanent and are reported as
+    not reversible. Refuses if the original outcome was unknown or an undo already exists."""
+    from .undo import undo_change as _undo
+    return _undo(draft_id)
+
+
+@mcp.tool()
 def create_portfolio_bidding_strategy(
     name: Annotated[str, Field(strict=True)],
     strategy_type: Annotated[str, Field(strict=True)],

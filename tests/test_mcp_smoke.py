@@ -16,7 +16,7 @@ EXPECTED_TOOLS = {
     "update_ad_group",
     "pause_entity",
     "enable_entity",
-    "confirm_and_apply",
+    "confirm_and_apply", "undo_change",
     "get_account_info",
     "get_campaign_performance",
     "get_ad_performance",
@@ -41,7 +41,7 @@ EXPECTED_TOOLS = {
 def test_all_59_tools_publish_serializable_input_schemas():
     async def check():
         inventory = await mcp.list_tools()
-        assert len(inventory) == 59
+        assert len(inventory) == 60
         assert {tool.name for tool in inventory} == EXPECTED_TOOLS
         for tool in inventory:
             json.dumps(tool.input_schema)
