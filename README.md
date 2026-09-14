@@ -21,7 +21,7 @@ So the design goal here is simple: the assistant proposes, the server decides wh
 | Per-account write allowlist | n/a | Rare | Yes, must be a subset of the read allowlist |
 | Preview then separate confirm call | n/a | Some | Yes, every write |
 | Daily budget, CPC, and target CPA ceilings | n/a | Some | Yes, three separate caps |
-| Refuses to clear a Performance Max target | n/a | Not found | Yes |
+| Refuses to clear a Performance Max target (budget still caps spend; this protects cost per result) | n/a | Not found | Yes |
 | Extra opt-in for shared or blast-radius resources | n/a | Not found | Yes, seven separate switches (shared budgets, portfolios, conversion goals, shared audiences, recommendations, shared negative lists, permanent removal) |
 | New campaigns, ad groups, ads created PAUSED | n/a | Some | Yes, always |
 | Local audit log | n/a | Some log applied writes | Logs drafts, refusals, applies, and unknown outcomes |

@@ -27,7 +27,7 @@ The recommended credential YAML is a plain-text settings file with `json_key_fil
 
 Independent opt-ins default to `false`: `GOOGLE_ADS_ALLOW_SHARED_BUDGET_EDIT`, `GOOGLE_ADS_ALLOW_PORTFOLIO_EDIT`, `GOOGLE_ADS_ALLOW_CONVERSION_GOAL_EDIT`, `GOOGLE_ADS_ALLOW_SHARED_AUDIENCE_EDIT`, `GOOGLE_ADS_ALLOW_APPLY_RECOMMENDATION`, `GOOGLE_ADS_ALLOW_SHARED_NEGATIVE_SET_EDIT`, and `GOOGLE_ADS_ALLOW_REMOVE_ENTITY` (permanent removal of a campaign, ad group, or ad). Set only the feature you intend to use. Global writes and account allowlists still apply.
 
-Clearing the target CPA or target ROAS on a Performance Max campaign is refused outright (`PMAX_TARGET_CLEAR`); raise the target in steps instead.
+Clearing the target CPA or target ROAS on a Performance Max campaign is refused outright (`PMAX_TARGET_CLEAR`). The campaign's daily budget still caps spend; the refusal protects cost per result, which in practice degrades sharply when a Performance Max target is removed. Raise the target in steps instead. This is a product choice, not a Google requirement.
 
 The credential YAML may contain only the keys the Google Ads client library needs for authentication (`developer_token`, `client_id`, `client_secret`, `refresh_token`, `json_key_file_path`, `impersonated_email`, `login_customer_id`, `linked_customer_id`, `use_proto_plus`, `use_cloud_org_for_api_access`). Any other key, including `logging`, stops startup.
 

@@ -111,6 +111,19 @@ def test_api_call_errors_audit_unknown_not_error(fake_client, exc_type):
     assert not [e for e in events if e["phase"] == "error"]
 
 
+@pytest.mark.parametrize("exc_type", [api_exceptions.InvalidArgument, api_exceptions.PermissionDenied,
+                                      api_exceptions.NotFound, api_exceptions.Unauthenticated])
+def test_definite_rejections_audit_error_not_unknown(fake_client, exc_type):
+    # Google answered and refused: nothing landed, so this is "error", not "unknown".
+    fake_client.dispatch_error = exc_type("offline")
+    out = rails.update_campaign_budget_draft(CID, "77", "75")
+    with pytest.raises(exc_type):
+        rails.apply_draft(out["draft_id"])
+    events = [json.loads(line) for line in Path(audit.AUDIT_PATH).read_text().splitlines()]
+    assert events[-1]["phase"] == "error"
+    assert not [e for e in events if e["phase"] == "unknown"]
+
+
 # 5. Consuming refusals are audited ----------------------------------------------------
 
 def test_unknown_expired_tampered_refusals_are_audited(fake_client):

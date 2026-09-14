@@ -703,11 +703,14 @@ def _compile_update(intent):
             if clear and stype in {"TARGET_CPA", "TARGET_ROAS"}:
                 raise RailViolation("this strategy requires a target; cannot clear it", code="BAD_CLEAR")
             if clear and current.get("advertising_channel_type") == "PERFORMANCE_MAX":
-                # Removing a Performance Max target uncaps spend. Raise it in steps instead;
-                # this tool never clears it.
+                # Product choice, not a universal rule: the daily budget still caps spend, but
+                # removing a PMax target removes the efficiency ceiling, and in practice volume
+                # jumps while cost per result degrades. Raise the target in steps instead.
                 raise RailViolation(
-                    "refusing to clear the target on a Performance Max campaign: this uncaps "
-                    "spend. Raise the target in steps instead.", code="PMAX_TARGET_CLEAR")
+                    "refusing to clear the target on a Performance Max campaign: the daily "
+                    "budget still applies, but without a target the campaign can spend to it at "
+                    "any cost per result. Raise the target in steps instead.",
+                    code="PMAX_TARGET_CLEAR")
             value = None if clear else (
                 _checked_money_micros(_amount(intent.target_cpa, check_target_cpa)) if cpa
                 else float(_amount(intent.target_roas, check_roas)))

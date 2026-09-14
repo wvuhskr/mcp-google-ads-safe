@@ -1072,10 +1072,23 @@ def shared_budget_attachments(customer_id, campaign_id, budget_resource_name, re
     return sorted(attachments, key=lambda c: c["resource_name"])
 
 
+# Google answered and rejected the request: the write did not land, so audit "error".
+_DEFINITE_REJECTIONS = (
+    api_exceptions.InvalidArgument, api_exceptions.FailedPrecondition,
+    api_exceptions.OutOfRange, api_exceptions.Unauthenticated,
+    api_exceptions.PermissionDenied, api_exceptions.NotFound,
+    api_exceptions.AlreadyExists, api_exceptions.MethodNotImplemented,
+)
+
+
 def is_transport_error(error):
-    """Recognize actual Google remapped failures while keeping construction errors distinct.
-    Any GoogleAPICallError raised by an RPC (Aborted, Unknown, Cancelled, ResourceExhausted...)
-    means the request may have reached Google, so the outcome is unknown, never "error"."""
+    """Recognize failures where the write MAY have landed, keeping definite rejections and
+    construction errors distinct. A GoogleAPICallError that is a definite server-side
+    rejection (bad argument, permission denied, not found...) means Google answered and
+    saved nothing -> "error". Anything else from the RPC (Unavailable, DeadlineExceeded,
+    Internal, Unknown, Aborted, Cancelled, ResourceExhausted) -> outcome unknown."""
+    if isinstance(error, _DEFINITE_REJECTIONS):
+        return False
     return (isinstance(error, api_exceptions.GoogleAPICallError)
             or (type(error).__module__ or "").startswith("grpc")
             or type(error).__name__ == "GoogleAdsException"
