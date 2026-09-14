@@ -384,7 +384,11 @@ def test_apply_lifecycle_consumption_and_audit(shared, monkeypatch, mode):
         assert len(calls) == 1
     events = [json.loads(line) for line in Path(audit.AUDIT_PATH).read_text().splitlines()]
     assert events[0]['phase'] == 'draft'
-    assert events[-1]['phase'] == ('unknown' if mode == 'ambiguous' else 'apply' if mode == 'success' else 'error')
+    if mode != 'validate_only':
+        # the refused re-apply above is audited; the outcome event sits right before it
+        assert events[-1]['phase'] == 'refused'
+        events = events[:-1]
+    assert events[-1]['phase'] == ('unknown' if mode == 'ambiguous' else 'apply' if mode == 'success' else 'apply_unverified')
 
 
 def test_actual_fake_dispatch_and_saved_path(shared, fake_gads, monkeypatch):

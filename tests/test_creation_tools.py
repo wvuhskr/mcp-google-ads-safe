@@ -246,7 +246,7 @@ def test_landed_postchecks_consume_and_audit_once(creation, monkeypatch, damage)
     with pytest.raises(rails.RailViolation):
         rails.apply_draft(draft['draft_id'])
     events = [json.loads(line) for line in Path(audit.AUDIT_PATH).read_text().splitlines()]
-    assert sum(event['phase'] in {'apply','error'} for event in events) == 1
+    assert sum(event['phase'] in {'apply', 'apply_unverified'} for event in events) == 1
 
 
 def test_deep_input_snapshot_and_postcheck_tamper(creation):
@@ -449,9 +449,9 @@ def test_optional_creation_target_readback(creation, fake_gads, monkeypatch,
         rails.apply_draft(draft['draft_id'])
     assert len(fake_gads.mutate_calls if real_provider else creation[1].dispatch_calls) == 1
     events = [json.loads(line) for line in Path(audit.AUDIT_PATH).read_text().splitlines()]
-    landed = [event for event in events if event['phase'] in {'apply', 'error'}]
+    landed = [event for event in events if event['phase'] in {'apply', 'apply_unverified'}]
     assert len(landed) == 1
-    assert landed[0]['phase'] == ('error' if mismatch else 'apply')
+    assert landed[0]['phase'] == ('apply_unverified' if mismatch else 'apply')
     if mismatch:
         assert landed[0]['applied'] is True
         assert landed[0]['code'] == 'POST_WRITE_VERIFICATION_FAILED'

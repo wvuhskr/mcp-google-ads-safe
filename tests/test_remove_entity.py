@@ -7,6 +7,15 @@ from mcp_google_ads_safe import client, rails, tools
 from tests.conftest import make_type
 
 CID = '1234567890'
+
+
+@pytest.fixture(autouse=True)
+def _allow_remove(monkeypatch):
+    # remove_entity sits behind its own opt-in; the suite baseline turns it on and
+    # test_remove_opt_in_default_off proves the default is off.
+    monkeypatch.setenv('GOOGLE_ADS_ALLOW_REMOVE_ENTITY', 'true')
+
+
 CAMPAIGN = f'customers/{CID}/campaigns/88'
 GROUP = f'customers/{CID}/adGroups/77'
 AD = f'customers/{CID}/adGroupAds/77~66'

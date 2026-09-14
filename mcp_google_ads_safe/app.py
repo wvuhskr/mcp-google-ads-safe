@@ -30,8 +30,33 @@ def _safety_error(error):
     return _ToolError(json.dumps(data, default=lambda _: '<non-JSON provider detail>'))
 
 
+def _reject_coercible_strings(arguments):
+    """Generic guard for EVERY tool: the SDK json-parses string arguments before field
+    validation, so the literal string "null" becomes None (and silently falls back to the
+    default account) and "[...]"/"{...}" become containers. Refuse those up front; the
+    per-tool blocks below add stricter shape checks for the tools that need them."""
+    if not isinstance(arguments, dict):
+        return
+    for key, value in arguments.items():
+        if type(value) is not str:
+            continue
+        stripped = value.strip()
+        if not stripped or stripped[0] not in "n[{":
+            continue  # cheap pre-filter: json.loads of ordinary text is never None/list/dict
+        try:
+            parsed = json.loads(stripped)
+        except ValueError:
+            continue
+        if parsed is None or isinstance(parsed, (list, dict)):
+            raise _safety_error(RailViolation(
+                f"argument {key!r} is a string that would be coerced to JSON "
+                f"{type(parsed).__name__ if parsed is not None else 'null'}; pass the real value",
+                code="BAD_INPUT"))
+
+
 class _SafetyServer(_Server):
     async def call_tool(self, name, arguments, *args, **kwargs):
+        _reject_coercible_strings(arguments)
         # MCP preparses JSON strings before strict field validation. Discovery must
         # validate the original container and optional strings before that conversion.
         if name == "discover_keywords":

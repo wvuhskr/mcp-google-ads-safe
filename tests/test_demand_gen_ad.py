@@ -523,8 +523,10 @@ def test_unknown_transport_consumes_and_retains_request_id(dg, monkeypatch):
         rails.apply_draft(original['draft_id'])
     assert len(calls) == 1
     events = [json.loads(line) for line in open(audit.AUDIT_PATH)]
-    assert events[-1]['phase'] == 'unknown'
-    assert events[-1]['request_id'] == 'offline-request'
+    # the second apply attempt is audited "refused"; the unknown outcome precedes it
+    assert events[-1]['phase'] == 'refused'
+    assert events[-2]['phase'] == 'unknown'
+    assert events[-2]['request_id'] == 'offline-request'
 
 
 def test_validate_only_consumes_without_saved_read(dg, monkeypatch):

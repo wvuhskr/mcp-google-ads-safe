@@ -35,6 +35,13 @@ _LIMIT_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 _SCAN_PAGE_CAP = 1000
 _ANCESTRY_DEPTH_CAP = 3
 _ANCESTRY_COUNT_CAP = 500
+# Only these keys are forwarded from the credential YAML to GoogleAdsClient.load_from_dict.
+# Anything else (notably `logging`, which reaches logging.config.dictConfig) is refused.
+_CREDENTIAL_KEYS = frozenset({
+    "developer_token", "client_id", "client_secret", "refresh_token",
+    "json_key_file_path", "impersonated_email", "login_customer_id", "linked_customer_id",
+    "use_proto_plus", "use_cloud_org_for_api_access",
+})
 
 
 # --- pure money helpers (money<->micros lives ONLY here) ------------------------------
@@ -136,7 +143,13 @@ def gads(profile: str | None = None):  # -> GoogleAdsClient
     if cached is not None:
         return cached
     with open(path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+        raw = yaml.safe_load(f) or {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path}: credential profile must be a mapping")
+    unknown = set(raw) - _CREDENTIAL_KEYS
+    if unknown:
+        raise ValueError(f"{path}: unsupported key(s) in credential profile: {sorted(unknown)}")
+    cfg = dict(raw)
     cfg["use_proto_plus"] = True
     built = GoogleAdsClient.load_from_dict(cfg, version="v25")
     _CLIENT_CACHE[path] = built
@@ -970,7 +983,8 @@ def update_state(customer_id, entity_type, entity_id):
     """Complete, sparse update fingerprint including current values and parent linkage."""
     from .rails import RailViolation
     fields = {
-        "campaign": "campaign.name, campaign.target_cpa.target_cpa_micros, "
+        "campaign": "campaign.name, campaign.advertising_channel_type, "
+                    "campaign.target_cpa.target_cpa_micros, "
                     "campaign.target_roas.target_roas, "
                     "campaign.maximize_conversions.target_cpa_micros, "
                     "campaign.maximize_conversion_value.target_roas",
@@ -989,6 +1003,9 @@ def update_state(customer_id, entity_type, entity_id):
     if entity_type == "ad_group":
         state["effective_target_cpa_source"] = _enum_name(
             "BiddingSourceEnum", state["effective_target_cpa_source"])
+    else:
+        state["advertising_channel_type"] = _enum_name(
+            "AdvertisingChannelTypeEnum", state.get("advertising_channel_type"))
     return state
 
 
@@ -1056,9 +1073,10 @@ def shared_budget_attachments(customer_id, campaign_id, budget_resource_name, re
 
 
 def is_transport_error(error):
-    """Recognize actual Google remapped failures while keeping construction errors distinct."""
-    return (isinstance(error, (api_exceptions.ServiceUnavailable, api_exceptions.DeadlineExceeded,
-                              api_exceptions.InternalServerError))
+    """Recognize actual Google remapped failures while keeping construction errors distinct.
+    Any GoogleAPICallError raised by an RPC (Aborted, Unknown, Cancelled, ResourceExhausted...)
+    means the request may have reached Google, so the outcome is unknown, never "error"."""
+    return (isinstance(error, api_exceptions.GoogleAPICallError)
             or (type(error).__module__ or "").startswith("grpc")
             or type(error).__name__ == "GoogleAdsException"
             or (hasattr(error, "request_id") and hasattr(error, "failure")))
@@ -1153,7 +1171,7 @@ def list_accounts() -> list[dict]:
     return out
 
 
-# --- M1-READS: 9 canned-GAQL report/lookup functions ------------------------------------
+# --- canned-GAQL report/lookup functions -------------------------------------------------
 # Every function here builds a fixed GAQL string and returns gaql(query, customer_id,
 # page_token) DIRECTLY -- never gaql_all/_scan_rows (those hard-refuse a LIMIT, and
 # search_terms below needs one). No decoding: the envelope's rows are proto-plus's raw
@@ -1163,8 +1181,12 @@ def list_accounts() -> list[dict]:
 def _date_clause(date_range_start, date_range_end) -> str:
     """GAQL date filter fragment (no leading AND). Explicit range -> BETWEEN; otherwise
     default to the last 30 days so a report never silently returns lifetime totals.
-    Validates nothing -- a malformed date literal is rejected by GAQL itself."""
+    Dates must be YYYY-MM-DD: they are interpolated into GAQL, so nothing else is allowed."""
     if date_range_start and date_range_end:
+        from .rails import RailViolation
+        for d in (date_range_start, date_range_end):
+            if not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
+                raise RailViolation(f"date {d!r} must be YYYY-MM-DD", code="BAD_DATE")
         return f"segments.date BETWEEN '{date_range_start}' AND '{date_range_end}'"
     return "segments.date DURING LAST_30_DAYS"
 
@@ -1279,9 +1301,8 @@ def negative_keywords(customer_id, page_token=None) -> dict:
 def geo_targets(customer_id, query, page_token=None) -> dict:
     """Search geo_target_constant by display-name substring (LIKE '%<query>%'). `query` is
     interpolated directly into the GAQL string, so a literal single quote is escaped first --
-    carried over from the identical guard in the production Google Ads MCP this server will
-    eventually replace (search_geo_targets in geo.rs)."""
-    escaped = query.replace("'", "\\'")
+    Backslash is escaped first so a trailing backslash cannot un-escape the quote."""
+    escaped = query.replace("\\", "\\\\").replace("'", "\\'")
     q = " ".join([
         "SELECT geo_target_constant.id, geo_target_constant.name,",
         "geo_target_constant.canonical_name, geo_target_constant.country_code,",
@@ -1332,8 +1353,7 @@ _ENTITY_READ = {
 
 def entities(customer_id, entity_type, ids=None, parent_id=None, page_token=None) -> dict:
     """Generic entity lookup across campaign|ad_group|keyword|ad, optionally filtered by ids
-    and/or parent_id. No existing production precedent for this tool -- the M1-READS task
-    brief's design table is authoritative. Unsupported entity_type raises RailViolation
+    and/or parent_id. Unsupported entity_type raises RailViolation
     (code='UNSUPPORTED_ENTITY'); campaign has no parent scope, so a parent_id given with
     entity_type='campaign' raises RailViolation. ids/parent_id are int(...)-cast before use --
     never interpolate a raw caller string into a numeric GAQL filter."""

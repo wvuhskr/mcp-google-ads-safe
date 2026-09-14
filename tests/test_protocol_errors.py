@@ -127,8 +127,11 @@ def test_real_mapped_failure_consumes_draft_once_and_audits_unknown(fake_client)
     assert event['failure']['details'] == result['failure']['details']
     assert result['failure']['errors'] == ['<non-JSON provider detail>']
     again = payload(boundary(app.mcp, 'confirm_and_apply', {'draft_id': draft['draft_id']}))
-    assert again['code'] == 'RAIL_VIOLATION'
+    assert again['code'] == 'UNKNOWN_DRAFT'
     assert len(fake_client.dispatch_calls) == 1
+    # the refused re-apply is audited too (was silent before)
+    tail = json.loads(Path(audit.AUDIT_PATH).read_text().splitlines()[-1])
+    assert tail['phase'] == 'refused' and tail['code'] == 'UNKNOWN_DRAFT'
 
 
 def test_exact_inventory_and_original_schemas():

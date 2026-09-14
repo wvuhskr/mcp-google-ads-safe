@@ -368,7 +368,8 @@ def test_apply_audit_failure_does_not_mask_landed_write(fake_client, tmp_path, m
     monkeypatch.setattr(rails.audit, "log_event", flaky)
     apply_out = rails.apply_draft(out["draft_id"])
     assert apply_out["applied"] is True
-    assert "disk full" in apply_out["audit_error"]
+    assert "audit log write failed" in apply_out["audit_error"]
+    assert "disk full" not in apply_out["audit_error"]  # OS detail stays on stderr
 
 
 # --- Fix 1: apply-time WRITE allowlist is STRUCTURAL, not riding on validate_fn ----------
