@@ -1,7 +1,10 @@
-"""Append-only JSONL audit log. Ported from the Microsoft-Ads blueprint; only the
-default path and env var change for Google.
+"""Append-only JSONL audit log.
 
-Phases: draft / refused / apply / error / unknown. Every event carries `tool`, `phase`,
+Phases: draft / refused / apply / apply_unverified / error / unknown.
+  apply            = mutate succeeded and (where applicable) the read-back matched
+  apply_unverified = mutate succeeded but the read-back did not match; the write LANDED
+  error            = failed before dispatch; nothing landed
+  unknown          = failed at the wire or in response parsing; the write MAY have landed Every event carries `tool`, `phase`,
 and a UTC-offset `ts`; the caller (rails) merges in the Google fields it has on hand
 (customer_id = mutate_customer_id, login_customer_id, currency, request_id,
 operation_count, digest). Missing fields are simply not passed -- audit never fabricates.

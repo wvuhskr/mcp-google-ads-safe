@@ -534,14 +534,14 @@ def test_verification_and_audit_failure_still_consumes_without_retry(
     original = rails.audit.log_event
 
     def fail_apply_audit(tool, phase, data):
-        if phase == 'error' and data.get('applied') is True:
+        if phase == 'apply_unverified' and data.get('applied') is True:
             raise OSError('synthetic apply audit failure')
         return original(tool, phase, data)
 
     monkeypatch.setattr(rails.audit, 'log_event', fail_apply_audit)
     result = rails.apply_draft(pending['draft_id'])
     assert result['applied'] is True and result['verified'] is False
-    assert result['audit_error'] == 'synthetic apply audit failure'
+    assert 'audit log write failed' in result['audit_error']
     with pytest.raises(rails.RailViolation):
         rails.apply_draft(pending['draft_id'])
     assert len(fake.dispatch_calls) == 1

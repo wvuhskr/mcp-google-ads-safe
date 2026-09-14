@@ -1,5 +1,5 @@
 """MCP tool surface: the minimal write slice (health_check, run_gaql, update_campaign budget,
-pause_entity/enable_entity, confirm_and_apply) plus the M1-READS batch of 9 read-only report/
+pause_entity/enable_entity, confirm_and_apply) plus the batch of 9 read-only report/
 lookup tools (get_account_info, get_campaign_performance, get_ad_performance,
 get_keyword_performance, get_search_terms, get_geo_performance, get_negative_keywords,
 search_geo_targets, get_entities).
@@ -138,7 +138,7 @@ def create_portfolio_bidding_strategy(
         rails.CreatePortfolioBiddingStrategyIntent(cid, name, strategy_type, target_cpa, target_roas))
 
 
-# --- M1-READS: 9 read-only report/lookup tools ------------------------------------------
+# --- 9 read-only report/lookup tools ----------------------------------------------------
 
 @mcp.tool()
 def get_account_info(customer_id: str | None = None) -> dict:

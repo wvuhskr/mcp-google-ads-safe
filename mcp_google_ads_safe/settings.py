@@ -6,11 +6,8 @@ yaml loads as None (empty), means all defaults. Any other shape problem is a
 loud ValueError naming the offending key and the file path -- this fails at
 server startup, not mid-tool-call.
 
-Ported from the Microsoft-Ads blueprint. Two changes for Google:
-  - keyword_research uses the GOOGLE shape (geo_target_constant_ids /
-    language_constant_id / keyword_plan_network / include_adult_keywords) instead of
-    the Microsoft location_id / language / network shape.
-  - require_pmax_target_cpa (Microsoft-only) is dropped.
+keyword_research uses the Google Keyword Planner shape (geo_target_constant_ids /
+language_constant_id / keyword_plan_network / include_adult_keywords).
 """
 import os
 

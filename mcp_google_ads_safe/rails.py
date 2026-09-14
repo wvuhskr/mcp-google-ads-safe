@@ -1,6 +1,6 @@
 """Safety rails for the Google Ads write server.
 
-Ported from the Microsoft-Ads blueprint, reshaped around a DECLARATIVE write model:
+A DECLARATIVE write model:
 
   tool  --builds-->  Intent (dataclass, currency units, target ids)
   rails.compile(intent)  -->  CompiledPlan(preview, plan, fingerprint, validate_fn)
@@ -20,6 +20,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -99,6 +100,12 @@ def max_cpc() -> float:
     return parse_positive_float_env("GOOGLE_ADS_MAX_CPC", 50)
 
 
+def max_target_cpa() -> float:
+    # Separate cap for target CPA so raising it for realistic tCPA values does not silently
+    # raise the manual CPC ceiling. Unset -> falls back to GOOGLE_ADS_MAX_CPC.
+    return parse_positive_float_env("GOOGLE_ADS_MAX_TARGET_CPA", max_cpc())
+
+
 def draft_ttl_seconds() -> float:
     # A draft previews the account at draft time; past this age the account may have moved
     # underneath it, so apply_draft refuses a stale preview. Default 3600s.
@@ -109,15 +116,22 @@ def allow_shared_budget_edit() -> bool:
     return parse_bool_env("GOOGLE_ADS_ALLOW_SHARED_BUDGET_EDIT", False)
 
 
-# Defined for later scopes (portfolio-edit / conversion-goal-edit rails); NO tool wires
-# these in B2. ponytail: they exist now so the parsers are pinned and consistent, the
-# rails that read them arrive with their tools.
 def allow_portfolio_edit() -> bool:
     return parse_bool_env("GOOGLE_ADS_ALLOW_PORTFOLIO_EDIT", False)
 
 
 def allow_conversion_goal_edit() -> bool:
     return parse_bool_env("GOOGLE_ADS_ALLOW_CONVERSION_GOAL_EDIT", False)
+
+
+def check_remove_entity_enabled() -> None:
+    """Permanent removal cannot be undone from the UI, so it sits behind its own opt-in like
+    the other blast-radius writes. Checked at compile AND apply."""
+    if not parse_bool_env("GOOGLE_ADS_ALLOW_REMOVE_ENTITY", False):
+        raise RailViolation(
+            "remove_entity is disabled: set GOOGLE_ADS_ALLOW_REMOVE_ENTITY=true to allow "
+            "permanent removal (in addition to GOOGLE_ADS_ENABLE_WRITES)",
+            code="REMOVE_DISABLED")
 
 
 def check_writes_enabled() -> None:
@@ -240,7 +254,7 @@ def classify_bidding_strategy(name: str):
 def check_bid_write_allowed(strategy_name: str, subject: str) -> None:
     """Permit a fixed-bid / %-adjustment write ONLY under SUPPORTED_MANUAL; every other
     class raises RailViolation with the class's own audit code and a distinct message.
-    Spine for the M1 bid tools — no tool calls it in B2."""
+    Not wired to any tool yet (Smart Bidding campaigns ignore bid adjustments)."""
     cls, code = classify_bidding_strategy(strategy_name)
     if cls == "SUPPORTED_MANUAL":
         return
@@ -293,10 +307,19 @@ def check_budget(amount) -> None:
 
 
 def check_bid(amount) -> None:
-    _check_valid_amount(amount, "bid/tCPA")
+    _check_valid_amount(amount, "bid")
     if amount > max_cpc():
         raise RailViolation(
-            f"bid/tCPA {amount} exceeds cap {max_cpc()} (GOOGLE_ADS_MAX_CPC)",
+            f"bid {amount} exceeds cap {max_cpc()} (GOOGLE_ADS_MAX_CPC)",
+            code="CAP_EXCEEDED")
+
+
+def check_target_cpa(amount) -> None:
+    _check_valid_amount(amount, "target CPA")
+    if amount > max_target_cpa():
+        raise RailViolation(
+            f"target CPA {amount} exceeds cap {max_target_cpa()} "
+            "(GOOGLE_ADS_MAX_TARGET_CPA, falls back to GOOGLE_ADS_MAX_CPC)",
             code="CAP_EXCEEDED")
 
 
@@ -679,8 +702,14 @@ def _compile_update(intent):
             clear = intent.clear_target_cpa if cpa else intent.clear_target_roas
             if clear and stype in {"TARGET_CPA", "TARGET_ROAS"}:
                 raise RailViolation("this strategy requires a target; cannot clear it", code="BAD_CLEAR")
+            if clear and current.get("advertising_channel_type") == "PERFORMANCE_MAX":
+                # Removing a Performance Max target uncaps spend. Raise it in steps instead;
+                # this tool never clears it.
+                raise RailViolation(
+                    "refusing to clear the target on a Performance Max campaign: this uncaps "
+                    "spend. Raise the target in steps instead.", code="PMAX_TARGET_CLEAR")
             value = None if clear else (
-                _checked_money_micros(_amount(intent.target_cpa, check_bid)) if cpa
+                _checked_money_micros(_amount(intent.target_cpa, check_target_cpa)) if cpa
                 else float(_amount(intent.target_roas, check_roas)))
             target_update = update
             target_masks = masks
@@ -723,7 +752,7 @@ def _compile_update(intent):
                 if intent.clear_target_cpa:
                     value = str(inherited)
                 else:
-                    value = _checked_money_micros(_amount(intent.target_cpa, check_bid))
+                    value = _checked_money_micros(_amount(intent.target_cpa, check_target_cpa))
                     update["target_cpa_micros"] = value
                 masks += ["target_cpa_micros"]
                 expected = {"effective_target_cpa_micros": str(value),
@@ -1019,6 +1048,7 @@ _REMOVE_ENTITY_SERVICE = {'campaign': 'CampaignService', 'ad_group': 'AdGroupSer
 
 def _compile_remove_entity(intent: RemoveEntityIntent) -> CompiledPlan:
     check_writes_enabled()
+    check_remove_entity_enabled()
     if type(intent.customer_id) is not str:
         raise RailViolation('customer_id must be a positive numeric string')
     if not re.fullmatch(r'[1-9][0-9]*', intent.customer_id):
@@ -1145,11 +1175,15 @@ class Draft:
 
 
 _DRAFTS: dict[str, Draft] = {}
+# Serializes create_draft/apply_draft. The MCP SDK may run sync tools on a thread pool, so
+# peek -> validate -> pop -> dispatch must never interleave for the same draft id.
+# ponytail: one global lock (applies are rare and already slow); per-draft locks if it matters.
+_DRAFT_LOCK = threading.RLock()
 
 
 def _prune_expired_drafts() -> None:
-    # Bounds _DRAFTS. Single-threaded stdio server -> an inline sweep on normal draft
-    # traffic is the whole fix; no lock, no background thread. Uses monotonic time.
+    # Bounds _DRAFTS with an inline sweep under _DRAFT_LOCK; no background thread.
+    # Uses monotonic time.
     # ponytail: sweeps every expired draft, so an unrelated call can sweep a different
     # stale draft first (its later apply then gets the generic "unknown" instead of
     # "expired") — no safety impact, pop-before-check still prevents double-apply.
@@ -1182,6 +1216,11 @@ def create_draft(tool: str, preview: dict, plan, fingerprint: dict,
     """Store a declarative draft and return its dry-run preview. Writes-gate runs BEFORE any
     draft/audit side effect. created_at is monotonic. The "draft" audit event carries the
     plan digest, mutate_customer_id, and operation_count."""
+    with _DRAFT_LOCK:
+        return _create_draft_locked(tool, preview, plan, fingerprint, validate_fn)
+
+
+def _create_draft_locked(tool, preview, plan, fingerprint, validate_fn) -> dict:
     check_writes_enabled()  # before any side effect
     try:
         if (isinstance(plan, RecommendationActionPlan) or getattr(plan, 'kind', None) == 'recommendation'):
@@ -1221,6 +1260,11 @@ def apply_draft(draft_id: str) -> dict:
     ONE dispatcher client._dispatch(plan). A refused apply (writes off, drift) must NOT
     consume the draft; an expired draft is consumed with a distinct message and never
     dispatched."""
+    with _DRAFT_LOCK:
+        return _apply_draft_locked(draft_id)
+
+
+def _apply_draft_locked(draft_id: str) -> dict:
     peeked = _DRAFTS.get(draft_id)  # peek only -- tool name known from the draft
     tool = peeked.tool if peeked is not None else "unknown"
     try:
@@ -1238,6 +1282,8 @@ def apply_draft(draft_id: str) -> dict:
             # cannot apply a write to a non-write-allowlisted customer. Runs before pop, so a
             # refusal is non-consuming AND audited "refused" by the except below.
             check_customer_allowlisted(_plan_customer_id(peeked.plan), "write")
+            if peeked.tool == "remove_entity":
+                check_remove_entity_enabled()
         if (peeked is not None and peeked.validate_fn is not None
                 and not (isinstance(peeked.plan, RecommendationActionPlan)
                          and peeked.plan.rpc == 'apply')
@@ -1254,23 +1300,29 @@ def apply_draft(draft_id: str) -> dict:
     d = _DRAFTS.pop(draft_id, None)
     _prune_expired_drafts()  # sweep other stale entries while we're touching the dict
     if d is None:
-        raise RailViolation(f"unknown or already-applied draft_id '{draft_id}' — re-draft to retry")
+        e = RailViolation(f"unknown or already-applied draft_id '{draft_id}' — re-draft to retry",
+                          code="UNKNOWN_DRAFT")
+        _audit_refused(tool, e)
+        raise e
     age = time.monotonic() - d.created_at
     ttl = draft_ttl_seconds()
     if age > ttl:
         # Distinct message on purpose: "unknown" means no such draft; this means it existed
         # and went stale, so the caller must re-draft rather than retry.
-        raise RailViolation(
+        e = RailViolation(
             f"draft_id '{draft_id}' expired: drafted {age:.0f}s ago, TTL is {ttl:.0f}s "
-            "(GOOGLE_ADS_DRAFT_TTL_SECONDS) — re-draft to retry")
+            "(GOOGLE_ADS_DRAFT_TTL_SECONDS) — re-draft to retry", code="DRAFT_EXPIRED")
+        _audit_refused(tool, e, d.plan)
+        raise e
 
     # MutationOp.operation is a mutable dict, so frozen=True does not stop the previewed plan
     # from diverging from what gets executed. Recompute the digest and refuse if it changed
     # since the draft was previewed/audited. After pop on purpose: a corrupted in-memory plan
     # must not be left behind to be retried.
     if plan_digest(d.plan) != d.digest:
-        raise RailViolation(
-            "plan digest changed since draft — refusing", code="PLAN_TAMPERED")
+        e = RailViolation("plan digest changed since draft — refusing", code="PLAN_TAMPERED")
+        _audit_refused(tool, e, d.plan)
+        raise e
 
     try:
         result = client._dispatch(d.plan)
@@ -1389,11 +1441,17 @@ def apply_draft(draft_id: str) -> dict:
         if verification is not None:
             apply_data.update(code="POST_WRITE_VERIFICATION_FAILED", applied=True,
                               verification_error=verification)
-        audit.log_event(d.tool, "error" if verification is not None else "apply", apply_data)
+        # "apply_unverified" = mutate returned success but the read-back did not match.
+        # Never phase "error": that phase means nothing landed.
+        audit.log_event(d.tool, "apply_unverified" if verification is not None else "apply",
+                        apply_data)
     except Exception as audit_exc:
         # _dispatch already landed on the live account -- an audit failure here must not tell
-        # the caller the write failed (that invites a duplicate retry). Surface the gap.
-        out["audit_error"] = str(audit_exc)
+        # the caller the write failed (that invites a duplicate retry). Surface the gap
+        # without echoing the local filesystem path the OSError carries.
+        print(f"apply_draft: audit log failed for {d.tool} draft {d.id} (apply phase): "
+              f"{audit_exc}", file=sys.stderr)
+        out["audit_error"] = "audit log write failed; the write itself was dispatched"
     return out
 
 
@@ -1763,7 +1821,7 @@ def _compile_portfolio_creation(intent):
     if intent.strategy_type == 'TARGET_CPA':
         if intent.target_cpa is None or intent.target_roas is not None:
             raise RailViolation('TARGET_CPA requires target_cpa and forbids target_roas')
-        target = _checked_money_micros(_amount(intent.target_cpa, check_bid))
+        target = _checked_money_micros(_amount(intent.target_cpa, check_target_cpa))
         scheme, parameters = 'target_cpa', {'target_cpa_micros': target}
     else:
         if intent.target_roas is None or intent.target_cpa is not None:
@@ -1845,7 +1903,7 @@ def _compile_creation(intent):
         if intent.target_cpa is not None:
             if strategy != 'maximize_conversions':
                 raise RailViolation("target CPA only applies to Maximize Conversions")
-            params['target_cpa_micros'] = _checked_money_micros(_amount(intent.target_cpa, check_bid))
+            params['target_cpa_micros'] = _checked_money_micros(_amount(intent.target_cpa, check_target_cpa))
         if intent.target_roas is not None:
             if strategy != 'maximize_conversion_value':
                 raise RailViolation("target ROAS only applies to Maximize Conversion Value")
@@ -3167,7 +3225,7 @@ def _compile_pmax_creation(intent):
     name, group_name = client.creation_name(intent.campaign_name), client.creation_name(intent.asset_group_name)
     check_content([name, group_name])
     budget_micros = _checked_money_micros(_amount(intent.daily_budget, check_budget))
-    target_micros = _checked_money_micros(_amount(intent.target_cpa, check_bid))
+    target_micros = _checked_money_micros(_amount(intent.target_cpa, check_target_cpa))
     geo_ids, language_ids = _creation_ids(intent.geo_target_ids), _creation_ids(intent.language_ids)
     texts = {role: client.pmax_texts(role, items) for role, items in (
         ('HEADLINE', intent.headlines), ('LONG_HEADLINE', intent.long_headlines),

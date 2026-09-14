@@ -20,11 +20,18 @@ The recommended credential YAML is a plain-text settings file with `json_key_fil
 | --- | --- | --- |
 | `GOOGLE_ADS_ENABLE_WRITES` | `false` | Enables draft creation and confirmation. Values: `true`, `false`, `1`, or `0`. |
 | `GOOGLE_ADS_MAX_DAILY_BUDGET` | `1000` | Positive cap in the target account's currency, with no conversion. |
-| `GOOGLE_ADS_MAX_CPC` | `50` | Positive cost-per-click or target cost-per-acquisition cap in the target account's currency. |
+| `GOOGLE_ADS_MAX_CPC` | `50` | Positive cost-per-click bid cap in the target account's currency. |
+| `GOOGLE_ADS_MAX_TARGET_CPA` | same as `GOOGLE_ADS_MAX_CPC` | Positive target cost-per-acquisition cap in the target account's currency. Set it separately so a realistic target CPA does not require raising the CPC cap. |
 | `GOOGLE_ADS_DRAFT_TTL_SECONDS` | `3600` | Positive lifetime for an in-memory draft. Drafts also disappear on restart and cannot be reused after confirmation. |
 | `GOOGLE_ADS_AUDIT_PATH` | `~/.mcp-google-ads-safe/audit.jsonl` | Append-only local audit-log path. |
 
-Independent opt-ins default to `false`: `GOOGLE_ADS_ALLOW_SHARED_BUDGET_EDIT`, `GOOGLE_ADS_ALLOW_PORTFOLIO_EDIT`, `GOOGLE_ADS_ALLOW_CONVERSION_GOAL_EDIT`, `GOOGLE_ADS_ALLOW_SHARED_AUDIENCE_EDIT`, `GOOGLE_ADS_ALLOW_APPLY_RECOMMENDATION`, and `GOOGLE_ADS_ALLOW_SHARED_NEGATIVE_SET_EDIT`. Set only the feature you intend to use. Global writes and account allowlists still apply.
+Independent opt-ins default to `false`: `GOOGLE_ADS_ALLOW_SHARED_BUDGET_EDIT`, `GOOGLE_ADS_ALLOW_PORTFOLIO_EDIT`, `GOOGLE_ADS_ALLOW_CONVERSION_GOAL_EDIT`, `GOOGLE_ADS_ALLOW_SHARED_AUDIENCE_EDIT`, `GOOGLE_ADS_ALLOW_APPLY_RECOMMENDATION`, `GOOGLE_ADS_ALLOW_SHARED_NEGATIVE_SET_EDIT`, and `GOOGLE_ADS_ALLOW_REMOVE_ENTITY` (permanent removal of a campaign, ad group, or ad). Set only the feature you intend to use. Global writes and account allowlists still apply.
+
+Clearing the target CPA or target ROAS on a Performance Max campaign is refused outright (`PMAX_TARGET_CLEAR`); raise the target in steps instead.
+
+The credential YAML may contain only the keys the Google Ads client library needs for authentication (`developer_token`, `client_id`, `client_secret`, `refresh_token`, `json_key_file_path`, `impersonated_email`, `login_customer_id`, `linked_customer_id`, `use_proto_plus`, `use_cloud_org_for_api_access`). Any other key, including `logging`, stops startup.
+
+Audit log phases: `draft`, `refused`, `apply`, `apply_unverified` (the change landed but the read-back did not match), `error` (failed before dispatch, nothing landed), and `unknown` (failed at the wire, the change may have landed).
 
 ## Advertiser settings
 

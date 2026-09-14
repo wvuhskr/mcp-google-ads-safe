@@ -225,7 +225,8 @@ def test_post_write_failure_is_consumed_and_explicit(state, fake_client, monkeyp
     assert len(fake_client.dispatch_calls) == 1
     with open(audit.AUDIT_PATH) as handle:
         events = [json.loads(line) for line in handle]
-    assert events[-1]["phase"] == "error"
+    assert events[-1]["phase"] == "apply_unverified"
+    assert events[-1]["applied"] is True
 
 
 def test_ad_group_cpc_verified_real_message(state, fake_client, fake_gads, monkeypatch):
