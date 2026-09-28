@@ -17,7 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Office/Business :: Financial",
 ]
-dependencies = ["google-ads>=32.0.0,<33", "mcp>=1.0,<3", "pyyaml>=6.0.3", "Pillow>=12.3,<13"]
+dependencies = ["google-ads>=32.0.0,<34", "mcp>=1.0,<3", "pyyaml>=6.0.3", "Pillow>=12.3,<13"]
 
 [project.urls]
 Homepage = "https://github.com/wvuhskr/mcp-google-ads-safe"
