@@ -42,6 +42,17 @@ Only with `GOOGLE_ADS_READ_SCOPE=manager`. `NOT_UNDER_MANAGER`: the account numb
 
 A change was requested without a `customer_id` while an account is picked with `use_account`. The pick applies to reports only. Name the `customer_id` on the change, or clear the pick with `use_account()`.
 
+## `NO_ACCOUNT_CONTEXT`
+
+`advertiser.yaml` has an `accounts:` section, and a step tried to read a house rule or spend
+cap without saying which account it was for. Tools set this themselves, so seeing it means
+a tool path was missed: please report it. Removing the `accounts:` section restores the
+single-advertiser behavior.
+
+## `BAD_LIMIT`
+
+A report `limit` must be a whole number from 1 to 1,000.
+
 ## `BAD_READ_SCOPE`
 
 `GOOGLE_ADS_READ_SCOPE` must be `list` or `manager`.

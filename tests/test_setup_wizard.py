@@ -149,3 +149,18 @@ def test_the_bare_command_still_serves(monkeypatch):
     server.main()
     assert seen == ["load", "preflight", "run"]
     assert os.environ.get("HOME")
+
+
+def test_readme_names_every_tool_and_the_current_version():
+    import asyncio
+    import pathlib
+    import tomllib
+
+    from mcp_google_ads_safe import app, tools  # noqa: F401
+    root = pathlib.Path(__file__).resolve().parents[1]
+    readme = (root / "README.md").read_text()
+    for tool in asyncio.run(app.mcp.list_tools()):
+        assert f"`{tool.name}`" in readme, f"README does not mention {tool.name}"
+    version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
+    assert f"Version {version}." in readme
+    assert f"## {version} " in (root / "CHANGELOG.md").read_text()

@@ -1,7 +1,7 @@
 # mcp-google-ads-safe
 
 An unofficial Model Context Protocol (MCP) server, a standard way for an assistant to call
-tools, for Google Ads API v25. The current source contains 63 tools: the account tools `find_accounts`, `use_account` and `current_account` (see [Agency use](configuration.md#agency-use-many-client-accounts)), `undo_change` (below), the 25 Milestone 1 tools for account and
+tools, for Google Ads API v25. The current source contains 64 tools: the account tools `find_accounts`, `use_account` and `current_account` (see [Agency use](configuration.md#agency-use-many-client-accounts)), the field catalog `describe_fields` (see [Reports](#reports)), `undo_change` (below), the 25 Milestone 1 tools for account and
 performance reads, campaign and ad-group updates, status changes, keyword and negative
 keyword work, location exclusions, and campaign schedules, plus four Milestone 2 reads:
 `list_extensions`, `get_policy_issues`, `get_conversion_actions`, and `list_recommendations`.
@@ -85,6 +85,43 @@ The four read additions have offline coverage and historical September 7, 2026 l
 query acceptance within their stated filters. That record covers the prior policy
 query; current bounded read evidence is recorded in [release readiness](release-readiness.md). See
 [docs/m2-verification.md](m2-verification.md).
+
+## Reports
+
+`get_account_info`, the five performance reports, `get_negative_keywords`,
+`search_geo_targets`, `get_entities` and `run_gaql` return readable rows: status and type
+names, only the fields the query selected, counts as numbers, and money both in Google's
+micros and in whole currency units (`cost` beside `cost_micros`; `average_cpc_amount` beside
+`average_cpc`, and likewise for the other average and cost-per metrics). `run_gaql(raw=True)`
+returns Google's untouched rows instead.
+
+Every report answer has two extra blocks:
+
+- `account`: the customer id and how it was chosen (`customer_id`, `use_account` or
+  `GOOGLE_ADS_CUSTOMER_ID`).
+- `provenance`: the account's name, currency and time zone; `period` with the resolved
+  `start_date` and `end_date` (performance reports); the exact `query`; `rows_returned` and
+  `rows_total`; `truncated`, with `how_to_get_more` when it is true; a `conversions_note`
+  when conversions are selected and a `money_note` when money is.
+
+The conversions note says what Google's field reference says: `conversions` and
+`conversions_value` count only conversion actions included in the Conversions column;
+`all_conversions` counts every action; `conversions_by_conversion_date` is the column dated
+by when the conversion happened.
+
+The five performance reports take `limit` (default 100, maximum 1,000) and default to the
+last 30 days, not including today, in the account's time zone. The dates are computed and
+sent explicitly so `provenance.period` states exactly what was queried; if the account's
+time zone cannot be read, Google resolves the same window and the answer says so.
+`get_negative_keywords` and the other lookups are not limited; `provenance.truncated` says
+when more rows exist than one page returned.
+
+`describe_fields()` lists the common report resources in plain words.
+`describe_fields("campaign")` lists every field a query `FROM campaign` can select, with its
+type and whether it can be filtered or sorted; `category="metrics"` or `"segments"` lists
+those, and `name_contains` narrows any list. It reads Google's field catalog only and needs
+no account. `run_gaql`'s description carries eight recipes, each run read-only against a
+live account on 2026-11-19.
 
 ## Undo
 
