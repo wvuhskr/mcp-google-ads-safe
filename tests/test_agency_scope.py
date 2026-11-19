@@ -318,20 +318,136 @@ def test_without_a_pick_changes_keep_the_configured_default(picked, monkeypatch)
         "customer_id": "1000000001", "selected_by": "GOOGLE_ADS_CUSTOMER_ID"}
 
 
-def test_no_tool_reads_the_default_account_except_through_the_two_helpers():
+def test_only_the_account_helpers_touch_the_environment_default():
     """A change must never silently land in the configured default while another account is
-    picked. Every tool therefore resolves its account through _pick_or_default (reports) or
-    _change_default (changes); a tool reading the environment itself would bypass that."""
+    picked. Every tool resolves its account through _pick_or_default (reports) or
+    _change_default (changes). Any other function in tools.py that reads the environment or
+    the configured default would bypass that, so none may."""
+    import ast
     import inspect
-    source = inspect.getsource(tools)
-    assert source.count("GOOGLE_ADS_CUSTOMER_ID\")") + source.count("GOOGLE_ADS_CUSTOMER_ID')") == 2
+    allowed = {"_change_default": {"environ"}, "_pick_or_default": {"environ"},
+               "current_account": {"_default_customer_id"}}
+    for node in ast.parse(inspect.getsource(tools)).body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        used = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)
+                and n.attr in {"environ", "getenv", "_default_customer_id", "_allowlist"}}
+        assert used <= allowed.get(node.name, set()), f"{node.name} reads the default account itself"
 
 
-def test_recommendation_and_campaign_creation_changes_also_refuse_under_a_pick(picked):
+def test_every_kind_of_change_refuses_without_a_named_account_under_a_pick(picked):
     tools.use_account("1000000003")
-    for call in (lambda: tools.apply_recommendation("1"),
-                 lambda: tools.dismiss_recommendation("1"),
-                 lambda: tools.remove_entity("campaign", "1")):
+    calls = [
+        lambda: tools.apply_recommendation("1"),
+        lambda: tools.dismiss_recommendation("1"),
+        lambda: tools.remove_entity("campaign", "1"),
+        lambda: tools.pause_entity("campaign", "1", customer_id=""),
+        lambda: tools.update_campaign("1", daily_budget=5),
+        lambda: tools.draft_campaign("New", 5, "MAXIMIZE_CONVERSIONS", ["2840"], ["1000"], False),
+        lambda: tools.create_portfolio_bidding_strategy("P", "TARGET_CPA", target_cpa=5),
+        lambda: tools.create_pmax_campaign(
+            "P", "G", 5, None, ["2840"], ["1000"], ["h"], ["l"], ["d"], "B",
+            "https://example.com", "1", "2", "3", False),
+        lambda: tools.create_demand_gen_campaign("D", 5, ["2840"], ["1000"], False),
+        lambda: tools.create_shared_negative_set("N"),
+    ]
+    for number, call in enumerate(calls):
         with pytest.raises(rails.RailViolation) as exc:
             call()
-        assert exc.value.code == "ACCOUNT_REQUIRED"
+        assert exc.value.code == "ACCOUNT_REQUIRED", number
+    assert "write" not in picked
+
+
+def test_strict_id_reports_also_follow_the_pick(picked, monkeypatch):
+    monkeypatch.setattr(client, "get_policy_issues", lambda cid, token: {"rows": [], "cid": cid})
+    tools.use_account("1000000003")
+    out = tools.get_policy_issues()
+    assert out["cid"] == "1000000003"
+    assert out["account"] == {"customer_id": "1000000003", "selected_by": "use_account"}
+
+
+def test_the_pick_works_in_list_scope_and_only_for_listed_accounts(tree, monkeypatch):
+    monkeypatch.setattr(tools, "_PICKED", None)
+    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "1000000001,7777777777")
+    assert tools.use_account("1000000001")["picked"]["descriptive_name"] == "Smith Dental"
+    with pytest.raises(rails.RailViolation) as exc:
+        tools.use_account("1000000003")  # reachable but not listed
+    assert exc.value.code == "NOT_ALLOWLISTED"
+    with pytest.raises(rails.RailViolation) as exc:
+        tools.use_account("7777777777")  # listed but not under the manager
+    assert exc.value.code == "NOT_UNDER_MANAGER"
+    assert tools.current_account()["picked"]["customer_id"] == "1000000001"
+
+
+# --- review fixes ------------------------------------------------------------------------
+
+def test_a_change_rechecks_the_account_every_time_even_after_a_cached_read(tree, monkeypatch):
+    monkeypatch.setenv("GOOGLE_ADS_READ_SCOPE", "manager")
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_CUSTOMER_IDS", "1000000001")
+    rails.check_customer_allowlisted("1000000001", "read")
+    rails.check_customer_allowlisted("1000000001", "write")
+    tree["accounts"][1] = acct("1000000001", "Smith Dental", status="SUSPENDED")
+    with pytest.raises(rails.RailViolation) as exc:
+        rails.check_customer_allowlisted("1000000001", "write")
+    assert exc.value.code == "ACCOUNT_NOT_ACTIVE"
+
+
+def test_a_cached_read_proof_expires(tree, monkeypatch):
+    monkeypatch.setenv("GOOGLE_ADS_READ_SCOPE", "manager")
+    now = [1000.0]
+    monkeypatch.setattr(client.time, "monotonic", lambda: now[0])
+    rails.check_customer_allowlisted("1000000001", "read")
+    tree["accounts"][1] = acct("1000000001", "Smith Dental", hidden=True)
+    now[0] += client._DESCENDANT_TTL_SECONDS - 1
+    rails.check_customer_allowlisted("1000000001", "read")  # still inside the window
+    now[0] += 2
+    with pytest.raises(rails.RailViolation) as exc:
+        rails.check_customer_allowlisted("1000000001", "read")
+    assert exc.value.code == "ACCOUNT_NOT_ACTIVE"
+
+
+def test_can_write_matches_what_a_change_would_actually_be_allowed(tree, monkeypatch):
+    def flags():
+        return {a["customer_id"]: (a["can_read"], a["can_write"])
+                for a in client.find_accounts(include_hidden=True)["accounts"]}
+    # list scope: a write id that is not also a read id is a config error, so nothing writes
+    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "1000000001")
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_CUSTOMER_IDS", "1000000003")
+    assert flags()["1000000003"] == (False, False) and flags()["1000000001"] == (True, False)
+    # manager scope: a write-listed account that is canceled or hidden cannot be changed
+    monkeypatch.setenv("GOOGLE_ADS_READ_SCOPE", "manager")
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_CUSTOMER_IDS", "1000000001,1000000004,1000000005")
+    assert flags()["1000000001"] == (True, True)
+    assert flags()["1000000004"] == (False, False) and flags()["1000000005"] == (False, False)
+
+
+@pytest.mark.parametrize("bad", ["1000000004", "1000000005"])
+def test_startup_refuses_an_inactive_write_account_in_manager_scope(tree, monkeypatch, bad):
+    monkeypatch.setenv("GOOGLE_ADS_READ_SCOPE", "manager")
+    monkeypatch.setenv("GOOGLE_ADS_WRITE_CUSTOMER_IDS", f"1000000001,{bad}")
+    with pytest.raises(rails.RailViolation) as exc:
+        client.preflight()
+    assert exc.value.code == "ACCOUNT_NOT_ACTIVE" and bad in str(exc.value)
+
+
+@pytest.mark.parametrize("cid", ["1\u00b2", "\uff11000000001", "01000000001", "9" * 40])
+def test_manager_scope_refuses_odd_account_numbers_cleanly(tree, monkeypatch, cid):
+    monkeypatch.setenv("GOOGLE_ADS_READ_SCOPE", "manager")
+    with pytest.raises(rails.RailViolation) as exc:
+        rails.check_customer_allowlisted(cid, "read")
+    assert exc.value.code == "NOT_UNDER_MANAGER"
+    assert all(q.isascii() for _, q in tree["calls"])
+
+
+def test_find_accounts_refuses_an_absurd_page_token(tree):
+    with pytest.raises(rails.RailViolation):
+        client.find_accounts(page_token="9" * 5000)
+    assert tree["calls"] == []
+
+
+def test_a_duplicate_account_row_is_refused(tree, monkeypatch):
+    monkeypatch.setenv("GOOGLE_ADS_READ_SCOPE", "manager")
+    tree["accounts"].append(acct("1000000001", "Smith Dental"))
+    with pytest.raises(rails.RailViolation) as exc:
+        rails.check_customer_allowlisted("1000000001", "read")
+    assert exc.value.code == "NOT_UNDER_MANAGER"

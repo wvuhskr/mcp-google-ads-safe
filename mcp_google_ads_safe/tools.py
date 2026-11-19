@@ -44,8 +44,9 @@ def _change_default():
 
 def _pick_or_default():
     """(account, how it was chosen) for a REPORT that named no customer_id."""
-    if _PICKED:
-        return _PICKED, "use_account"
+    picked = _PICKED  # read once: tools run in threads and the pick can be cleared meanwhile
+    if picked:
+        return picked, "use_account"
     return os.environ.get("GOOGLE_ADS_CUSTOMER_ID"), "GOOGLE_ADS_CUSTOMER_ID"
 
 
@@ -83,9 +84,9 @@ def _labelled(result, account):
 
 @mcp.tool()
 def health_check() -> dict:
-    """Live sign-in check. One request proves the credential profile works and that every
+    """Live sign-in check. One request (two in manager scope, for the count) proves the credential profile works and that every
     listed account sits under the login manager. Reports the login manager, the read scope
-    ('list' or 'manager') and how many accounts are reachable. In list scope it also names
+    ('list' or 'manager') and how many client accounts are reachable. In list scope it also names
     the listed accounts; in manager scope use find_accounts to search them."""
     listed = client.preflight()
     scope = rails.read_scope()
@@ -131,6 +132,11 @@ def use_account(customer_id: str | None = None) -> dict:
     rails.check_customer_allowlisted(customer_id, "read")
     cid = rails._normalize_customer_id(customer_id)
     found = client.find_account(cid)
+    if found is None:
+        raise rails.RailViolation(
+            f"account {customer_id!r} was not found under the login manager — use "
+            "find_accounts to see the accounts this sign-in can reach",
+            code="NOT_UNDER_MANAGER")
     _PICKED = cid
     return {"picked": found, "note": "Reports now default to this account. Read tools only: "
                                      "changes must name customer_id every time."}

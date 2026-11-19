@@ -19,6 +19,7 @@ import io
 import json
 import os
 import re
+import time
 import warnings
 
 import yaml
@@ -1395,10 +1396,19 @@ def entities(customer_id, entity_type, ids=None, parent_id=None, page_token=None
 _CLIENT_FIELDS = ("id", "descriptive_name", "currency_code", "time_zone", "status",
                   "manager", "level", "test_account", "hidden")
 _FIND_ACCOUNTS_MAX = 200
-# (login manager, customer id) -> account row, for accounts already proven readable in
-# manager read scope. ponytail: lives for the process, so an account canceled or unlinked
-# after its first read stays cached until restart (Google itself then refuses the query).
+# (login manager, customer id) -> (account row, time proven), for accounts proven readable in
+# manager read scope. Reads reuse a proof for a few minutes; a change never does (it looks
+# the account up fresh every time), so an account that is hidden, suspended or unlinked
+# stops being changeable at once and stops being readable within the window.
 _DESCENDANT_CACHE: dict = {}
+_DESCENDANT_TTL_SECONDS = 600
+
+
+def _account_number(customer_id) -> str:
+    """Plain ASCII digits of a customer id, or '' when it cannot be one (Google customer ids
+    are at most 10 digits). Keeps non-ASCII digit characters out of every query."""
+    cid = _digits(customer_id)
+    return cid if cid.isascii() and 0 < len(cid) <= 10 and cid[0] != "0" else ""
 
 
 def login_manager_id() -> str:
@@ -1452,7 +1462,8 @@ def find_accounts(name_contains=None, include_managers=False, include_hidden=Fal
     if type(limit) is not int or not 1 <= limit <= _FIND_ACCOUNTS_MAX:
         raise RailViolation(f"limit must be a whole number from 1 to {_FIND_ACCOUNTS_MAX}",
                             code="BAD_INPUT")
-    if page_token is not None and (type(page_token) is not str or not page_token.isdecimal()):
+    if page_token is not None and (type(page_token) is not str or not page_token.isascii()
+                                   or not page_token.isdecimal() or len(page_token) > 9):
         raise RailViolation("page_token must be the next_page_token from a previous "
                             "find_accounts answer", code="BAD_INPUT")
     for flag in (include_managers, include_hidden):
@@ -1473,27 +1484,36 @@ def find_accounts(name_contains=None, include_managers=False, include_hidden=Fal
         cid = a["customer_id"]
         active = a["status"] == "ENABLED" and not a["hidden"]
         a["customer_id_formatted"] = _format_customer_id(cid)
-        a["can_read"] = active if scope == "manager" else cid in read_ids
-        a["can_write"] = cid in write_ids
+        # Mirror rails.check_customer_allowlisted exactly, so the flags never promise an
+        # access the tools would refuse.
+        if scope == "manager":
+            a["can_read"] = active
+            a["can_write"] = active and cid in write_ids
+        else:
+            a["can_read"] = cid in read_ids
+            a["can_write"] = cid in write_ids and write_ids <= read_ids
     more = start + limit < len(matches)
     return {"accounts": page, "returned_count": len(page), "total_matching": len(matches),
             "next_page_token": str(start + limit) if more else None,
             "login_manager": login_manager_id(), "read_scope": scope}
 
 
-def require_readable_descendant(customer_id) -> dict:
-    """Manager read scope: prove one account is an ENABLED, non-hidden descendant of the
-    login manager with a single filtered lookup, cached for the process once proven.
-    Refusals are never cached."""
+def require_readable_descendant(customer_id, fresh=False) -> dict:
+    """Manager read scope: prove one account is ENABLED, not hidden, and under the login
+    manager (the manager itself and sub-managers count) with a single filtered lookup. A
+    proof is reused for _DESCENDANT_TTL_SECONDS unless fresh=True, which every change
+    passes. Refusals are never cached."""
     from .rails import RailViolation
-    cid = _digits(customer_id)
+    cid = _account_number(customer_id)
     login_id = login_manager_id()
     if not cid:
         raise RailViolation(f"customer_id {customer_id!r} is not an account number",
                             code="NOT_UNDER_MANAGER")
     cached = _DESCENDANT_CACHE.get((login_id, cid))
-    if cached is not None:
-        return cached
+    if (not fresh and cached is not None
+            and time.monotonic() - cached[1] < _DESCENDANT_TTL_SECONDS):
+        return cached[0]
+    _DESCENDANT_CACHE.pop((login_id, cid), None)
     rows = _client_accounts(f" WHERE customer_client.id = {cid}")
     if len(rows) != 1 or rows[0]["customer_id"] != cid:
         raise RailViolation(
@@ -1506,14 +1526,15 @@ def require_readable_descendant(customer_id) -> dict:
             f"account {_format_customer_id(cid)} is {account['status']}"
             f"{' and hidden' if account['hidden'] else ''} — only enabled, visible accounts "
             "can be read", code="ACCOUNT_NOT_ACTIVE")
-    _DESCENDANT_CACHE[(login_id, cid)] = account
+    _DESCENDANT_CACHE[(login_id, cid)] = (account, time.monotonic())
     return account
 
 
 def find_account(customer_id) -> dict | None:
     """One account under the login manager by id, or None. Display only: no access check."""
-    rows = _client_accounts(f" WHERE customer_client.id = {int(_digits(customer_id))}")
-    if not rows:
+    cid = _account_number(customer_id)
+    rows = _client_accounts(f" WHERE customer_client.id = {cid}") if cid else []
+    if len(rows) != 1:
         return None
     return {**rows[0], "customer_id_formatted": _format_customer_id(rows[0]["customer_id"])}
 
@@ -1533,7 +1554,7 @@ def verify_login_manager_ancestry() -> list[dict]:
     too in list scope) must sit under the configured login manager. ONE customer_client
     query filtered to those ids, whatever the size or depth of the tree. Fails closed: an id
     Google does not return is refused by name. Returns the listed accounts it confirmed."""
-    from .rails import RailViolation, read_customer_ids, write_customer_ids
+    from .rails import RailViolation, read_customer_ids, read_scope, write_customer_ids
     login_id = login_manager_id()
     required = {_digits(x) for x in read_customer_ids() | write_customer_ids()}
     required.discard("")
@@ -1547,6 +1568,17 @@ def verify_login_manager_ancestry() -> list[dict]:
             f"login manager {login_id} is not an ancestor of {missing[0]} — every listed "
             "account must be under the sign-in's manager account; fix the list or the "
             "login_customer_id and restart", code="ANCESTRY_NOT_DESCENDANT")
+    if read_scope() == "manager":
+        # Manager scope refuses every change on an account that is not enabled and visible,
+        # so a write list naming one is a configuration error: say so at startup.
+        write_ids = {_digits(x) for x in write_customer_ids()}
+        for a in sorted(found, key=lambda a: a["customer_id"]):
+            if a["customer_id"] in write_ids and (a["status"] != "ENABLED" or a["hidden"]):
+                raise RailViolation(
+                    f"write-listed account {a['customer_id']} is {a['status']}"
+                    f"{' and hidden' if a['hidden'] else ''} — only enabled, visible accounts "
+                    "can be changed; remove it from GOOGLE_ADS_WRITE_CUSTOMER_IDS and restart",
+                    code="ACCOUNT_NOT_ACTIVE")
     return sorted((a for a in found if a["customer_id"] in required),
                   key=lambda a: a["customer_id"])
 

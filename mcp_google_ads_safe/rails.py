@@ -223,7 +223,7 @@ def check_customer_allowlisted(customer_id, mode: str) -> None:
                 f"customer_id {customer_id!r} is not allowlisted for write — changes are "
                 "limited to GOOGLE_ADS_WRITE_CUSTOMER_IDS (or GOOGLE_ADS_CUSTOMER_ID) even "
                 "when reads cover the whole manager account", code="NOT_ALLOWLISTED")
-        client.require_readable_descendant(cid)
+        client.require_readable_descendant(cid, fresh=(mode == "write"))
         return
     if not write.issubset(read):
         stray = sorted(write - read)

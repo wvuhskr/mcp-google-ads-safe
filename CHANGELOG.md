@@ -18,6 +18,7 @@ Agency use (work in progress toward 2.0.0):
 - Breaking: `health_check` now returns `login_manager`, `read_scope` and
   `reachable_accounts`; in manager scope it returns a count instead of an `accounts` list.
 - Breaking: every report answer carries an `account` block (`customer_id`, `selected_by`).
+- `health_check` `reachable_accounts` counts enabled, visible client accounts (managers excluded).
 - Tool count 63.
 
 ## 1.1.0 - 2026-09-14

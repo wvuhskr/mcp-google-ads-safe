@@ -48,7 +48,7 @@ A change was requested without a `customer_id` while an account is picked with `
 
 ## Writes disabled or account unauthorized
 
-`WRITES_DISABLED` means `GOOGLE_ADS_ENABLE_WRITES` is off. Enable it only after the read-only identity check. `NOT_ALLOWLISTED` means the customer is absent from the needed allowlist, or the write list is not a subset of the read list. Correct the explicit IDs; do not widen access merely to silence the error.
+`WRITES_DISABLED` means `GOOGLE_ADS_ENABLE_WRITES` is off. Enable it only after the read-only identity check. `NOT_ALLOWLISTED` means the customer is absent from the needed allowlist, or, in the default `list` read scope, the write list is not a subset of the read list. Correct the explicit IDs; do not widen access merely to silence the error.
 
 ## Draft expired, disappeared, or was used
 
