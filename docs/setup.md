@@ -5,7 +5,7 @@
 In your terminal (on a Mac, the Terminal app), with [uv](https://docs.astral.sh/uv/) installed:
 
 ```sh
-uvx --from git+https://github.com/wvuhskr/mcp-google-ads-safe mcp-google-ads-safe setup
+uvx mcp-google-ads-safe setup
 ```
 
 It asks three questions: where the Desktop client JSON from Google Cloud is, your manager
