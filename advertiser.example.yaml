@@ -26,13 +26,16 @@ keyword_research:
 # (dashes are fine). Anything not set here falls back to the values above.
 #   advertiser_domain  replaces the default website for this account
 #   blocked_terms      are ADDED to the list above, never replace it
-#   keyword_research   replaces the default block for this account
+#   keyword_research   the keys set here replace the ones above; the rest stay
 #   max_daily_budget, max_cpc, max_target_cpa
 #                      spend limits in THIS account's own currency. They replace
 #                      the GOOGLE_ADS_MAX_DAILY_BUDGET / GOOGLE_ADS_MAX_CPC /
 #                      GOOGLE_ADS_MAX_TARGET_CPA environment limits for this
 #                      account only, so a euro account and a yen account can
-#                      each have a sensible number.
+#                      each have a sensible number. They are NOT held under the
+#                      environment limits, so check every digit. Set
+#                      max_daily_budget and max_cpc together; max_target_cpa
+#                      is optional and falls back to this account's max_cpc.
 accounts:
   "123-456-7890":
     advertiser_domain: client-one.example

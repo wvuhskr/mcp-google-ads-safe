@@ -21,7 +21,10 @@ Agency use:
   `advertiser_domain`, `blocked_terms` (added to the top-level list), `keyword_research`
   and spend caps (`max_daily_budget`, `max_cpc`, `max_target_cpa`, in that account's own
   currency). See `advertiser.example.yaml`. With per-account rules configured, a step that
-  does not say which account it is for is refused (`NO_ACCOUNT_CONTEXT`).
+  does not say which account it is for is refused (`NO_ACCOUNT_CONTEXT`). Per-account caps
+  replace the environment caps for that account and are not held under them; an account
+  that sets any cap must set `max_daily_budget` and `max_cpc` together, and startup prints
+  each account that has its own caps.
 - Every draft names its account and the spend caps that apply, beside the preview.
 
 Reports:
@@ -34,6 +37,8 @@ Reports:
 - The five performance reports take `limit` (default 100, maximum 1,000). `get_search_terms`
   no longer has a fixed 200-row cap. The default period is still the last 30 days, now sent
   as explicit dates so the answer states them.
+- Breaking: giving only one of `date_range_start` / `date_range_end` is refused (`BAD_DATE`)
+  instead of silently using the default period.
 - New tool `describe_fields`: the common report resources in plain words, and for any
   resource its selectable fields, metrics and segments from Google's field catalog.
 - `run_gaql` documents eight recipes, each run read-only against a live account.
@@ -48,7 +53,7 @@ Setup and packaging:
 - `mcp>=1.30.0` (CVE-2026-59951, CVE-2026-116684/5/6), `Pillow>=13.0.0` (CVE-2026-128066,
   CVE-2026-128067), `google-ads` 32 through 35 (all ship API v25). CI adds `pip-audit` and a
   job on the oldest supported `mcp`. PyPI trusted-publishing workflow added.
-- README rewritten for marketers. 3,981 tests. Tool count 64.
+- README rewritten for marketers. 4,001 tests. Tool count 64.
 
 Not changed: creating a conversion action still reads every account under the manager
 before it will draft, so it stays slow on very large manager accounts.

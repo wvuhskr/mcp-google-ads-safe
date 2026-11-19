@@ -51,7 +51,7 @@ def test_report_rows_use_names_numbers_and_account_currency(api):
     assert row["metrics"]["impressions"] == 1000 and row["metrics"]["clicks"] == 7
     assert row["metrics"]["cost_micros"] == 12340000                  # original kept
     assert row["metrics"]["cost"] == 12.34                            # account currency
-    assert row["metrics"]["average_cpc_amount"] == 1.76               # micros-valued metric
+    assert row["metrics"]["average_cpc_amount"] == 1.762857           # micros-valued metric
     assert row["metrics"]["conversions"] == 1.5
 
 
@@ -182,3 +182,48 @@ def test_a_report_still_answers_when_the_account_lookup_fails(api, monkeypatch):
     assert "DURING LAST_30_DAYS" in out["provenance"]["query"]
     assert out["provenance"]["period"]["start_date"] is None
     assert "resolved by Google" in out["provenance"]["period"]["basis"]
+
+
+# --- review fixes ------------------------------------------------------------------------
+
+def test_the_last_page_of_a_paged_answer_is_not_called_truncated(api, monkeypatch):
+    monkeypatch.setattr(client, "gaql", lambda q, cid, token=None, readable=False: {
+        "rows": [{}] * 3, "returned_count": 3, "total_results_count": 5, "query_limited": False,
+        "pages_complete": True, "next_page_token": None})
+    prov = client.readable_report("SELECT campaign.id FROM campaign", CID, "TOKEN")["provenance"]
+    assert prov["truncated"] is False and "how_to_get_more" not in prov
+
+
+def test_the_hint_only_mentions_limit_where_a_limit_exists(api):
+    api["total"] = 99
+    assert "Raise limit" in client.campaign_performance(CID, limit=1)["provenance"]["how_to_get_more"]
+    hint = client.negative_keywords(CID)["provenance"]["how_to_get_more"]
+    assert "Raise limit" not in hint and "run_gaql" in hint
+
+
+def test_small_money_and_three_decimal_currencies_are_not_rounded_away(api):
+    api["rows"] = [dict(ROW, **{"metrics.cost_micros": 1500, "metrics.average_cpc": 4999.0})]
+    metrics = client.campaign_performance(CID)["rows"][0]["metrics"]
+    assert metrics["cost"] == 0.0015 and metrics["average_cpc_amount"] == 0.004999
+
+
+def test_a_fraction_in_micros_is_not_presented_as_money(api):
+    out = client._plain_numbers({"location_fraction_micros": "500000", "amount_micros": "2000000"})
+    assert out == {"location_fraction_micros": "500000", "amount_micros": 2000000, "amount": 2.0}
+
+
+def test_a_selected_field_with_no_value_shows_as_null_not_missing(api):
+    row = client._readable_row(
+        __import__("tests.conftest", fromlist=["make_row"]).make_row(**{"campaign.name": "x"}),
+        ["campaign.name", "ad_group_criterion.quality_info.quality_score",
+         "campaign.no_such_field.deeper"])
+    assert row["campaign"]["name"] == "x"
+    assert row["ad_group_criterion"]["quality_info"]["quality_score"] is None
+    assert row["campaign"]["no_such_field"]["deeper"] is None
+
+
+@pytest.mark.parametrize("start,end", [("2026-01-01", None), (None, "2026-01-31"), ("2026-01-01", "")])
+def test_one_date_without_the_other_is_refused_not_ignored(api, start, end):
+    with pytest.raises(rails.RailViolation) as exc:
+        client.campaign_performance(CID, start, end)
+    assert exc.value.code == "BAD_DATE" and report_queries(api) == []

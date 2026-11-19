@@ -28,7 +28,7 @@ So the design goal here is simple: the assistant proposes, the server decides wh
 | Local audit log | n/a | Some log applied writes | Logs drafts, refusals, applies, and unknown outcomes |
 | Fresh state re-check at confirm time | n/a | Not found | Yes |
 | Undo for applied changes | n/a | Not found | Yes, drafts the reverse from the audit log |
-| Automated tests | Unknown | Usually few or none | 3,981 |
+| Automated tests | Unknown | Usually few or none | 4,001 |
 
 "Typical community write server" summarizes the open-source write-capable servers I could find on GitHub in September 2026. The best of them ship two or three of these gates. To my knowledge none combine all of them in a maintained project, but I have not audited every repo, and this table is a snapshot, not a scoreboard. The [Google official server](https://developers.google.com/google-ads/api/docs/developer-toolkit/mcp-server) is the right choice if you only need reads and want Google-maintained code.
 
@@ -43,11 +43,11 @@ Once connected, talk to your assistant in plain words. It picks the tools.
 - "Do the same check for the next client on my list."
 - "Draft a negative keyword list from those search terms." (a change: previewed first, applied only on a second explicit step, and only if you turned changes on)
 
-Every report says which account it came from, its currency and time zone, the exact dates it covers, and whether it was cut short. Money is shown in whole currency units, statuses as words. Reports return 100 rows unless you ask for more (up to 1,000), so an answer never floods the chat.
+Every report says which account it came from, its currency and time zone, the exact dates it covers, and whether it was cut short. Money is shown in whole currency units, statuses as words. The standard performance reports return 100 rows unless you ask for more (up to 1,000). Custom queries and account lookups return up to one page (10,000 rows) and say when more exist, so add a limit to those yourself.
 
 ## Quick start
 
-You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) (a small tool that runs Python programs without a manual install), a Google Ads developer token, and access to the account or manager account you want to use.
+You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) (a small tool that runs Python programs without a manual install), a Google Cloud project with Google Ads API access (the [setup guide](docs/setup.md) explains how to get one), and access to the account or manager account you want to use.
 
 1. In your terminal (on a Mac, the Terminal app), run the guided setup. It asks three plain questions, opens Google's sign-in page, and saves a private sign-in file:
 
@@ -139,7 +139,7 @@ Details and every environment variable: [configuration](docs/configuration.md).
 
 ## Test coverage and live evidence
 
-Every one of the 3,981 tests runs offline against a fake Google Ads API. CI runs them on Ubuntu and macOS across Python 3.12, 3.13, and 3.14 on every push. That proves the request shapes, the safety logic, and the refusal paths. It does not prove Google accepts a given operation on your account.
+Every one of the 4,001 tests runs offline against a fake Google Ads API. CI runs them on Ubuntu and macOS across Python 3.12, 3.13, and 3.14 on every push. That proves the request shapes, the safety logic, and the refusal paths. It does not prove Google accepts a given operation on your account.
 
 Live evidence is uneven and documented per tool. All reporting and lookup tools have been run against a real account. A subset of writes (budget, name, target CPA / ROAS, ad-group CPC, ad-group pause / enable, exact-match keywords, Manual CPC campaign and ad-group creation) has been applied to a real account and read back. Most of the Performance Max, Demand Gen, asset, conversion, and recommendation writes have offline tests only. The [evidence matrix](docs/offline-capability-matrix.md) says which is which. Read it before enabling writes for anything you would not want to fix by hand.
 

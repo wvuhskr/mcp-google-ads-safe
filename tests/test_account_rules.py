@@ -196,3 +196,64 @@ def test_example_file_is_valid_and_documents_every_key(rules, monkeypatch):
     for key in ("advertiser_domain", "blocked_terms", "keyword_research", "accounts",
                 "max_daily_budget", "max_cpc", "max_target_cpa"):
         assert key in text
+
+
+# --- review fixes ------------------------------------------------------------------------
+
+@pytest.mark.parametrize("entry", [{"max_daily_budget": 5}, {"max_cpc": 5},
+                                   {"max_target_cpa": 5}, {"max_cpc": 5, "max_target_cpa": 9}])
+def test_an_account_with_its_own_caps_must_set_budget_and_cpc_together(rules, entry):
+    # Otherwise the missing one would silently come from the environment number, which is
+    # written for a different currency.
+    with pytest.raises(ValueError, match="max_daily_budget and max_cpc"):
+        rules({"accounts": {CID: entry}})
+
+
+def test_an_account_target_cpa_cap_falls_back_to_its_own_cpc_never_the_environment(
+        rules, monkeypatch):
+    monkeypatch.setenv("GOOGLE_ADS_MAX_TARGET_CPA", "200")
+    rules({"accounts": {CID: {"max_daily_budget": 30000, "max_cpc": 900}}})
+    settings.set_account(CID)
+    assert rails.max_target_cpa() == 900
+    settings.set_account(OTHER)
+    assert rails.max_target_cpa() == 200
+
+
+def test_partial_account_keyword_research_keeps_the_top_level_values(rules):
+    rules({"keyword_research": {"geo_target_constant_ids": [2840], "language_constant_id": 1000,
+                                "keyword_plan_network": "GOOGLE_SEARCH_AND_PARTNERS"},
+           "accounts": {CID: {"keyword_research": {"geo_target_constant_ids": [2392]}}}})
+    settings.set_account(CID)
+    assert settings.keyword_research() == {
+        "geo_target_constant_ids": [2392], "language_constant_id": 1000,
+        "keyword_plan_network": "GOOGLE_SEARCH_AND_PARTNERS", "include_adult_keywords": False}
+
+
+def test_startup_notice_lists_accounts_with_their_own_caps(rules, capsys):
+    rules(BASE)
+    settings.announce_account_caps()
+    err = capsys.readouterr().err
+    assert "1234567890" in err and "50" in err and "replace" in err
+    rules({"advertiser_domain": "default.example"})
+    settings.announce_account_caps()
+    assert capsys.readouterr().err == ""
+
+
+def test_a_change_with_no_account_anywhere_says_so_plainly(monkeypatch):
+    monkeypatch.delenv("GOOGLE_ADS_CUSTOMER_ID", raising=False)
+    monkeypatch.setattr(tools, "_PICKED", None)
+    for call in (lambda: tools.remove_entity("campaign", "1"),
+                 lambda: tools.create_shared_negative_set("N"),
+                 lambda: tools.apply_recommendation("1")):
+        with pytest.raises(rails.RailViolation, match="no customer_id given"):
+            call()
+
+
+def test_the_draft_label_is_worked_out_before_the_draft_is_stored(fake_client, monkeypatch):
+    def boom(cid):
+        raise RuntimeError("label failed")
+    monkeypatch.setattr(client, "known_account", boom)
+    before = set(rails._DRAFTS)
+    with pytest.raises(RuntimeError):
+        tools.update_campaign("77", daily_budget="75", customer_id=CID)
+    assert set(rails._DRAFTS) == before          # no orphan draft left behind

@@ -132,6 +132,17 @@ def _validate_accounts(accounts, path: str) -> dict:
         checked = _validate({k: v for k, v in rules.items() if k in _RULE_KEYS}, where,
                             allowed=_RULE_KEYS)
         entry = {k: checked[k] for k in _RULE_KEYS if k in rules}
+        if "keyword_research" in rules:
+            # Keep only what this account actually set; the rest comes from the top level.
+            entry["keyword_research"] = {k: checked["keyword_research"][k]
+                                         for k in rules["keyword_research"]}
+        if any(cap in rules for cap in _CAP_KEYS) and not (
+                "max_daily_budget" in rules and "max_cpc" in rules):
+            # A missing cap would silently come from the environment number, which is
+            # written for some other currency.
+            raise ValueError(
+                f"{where}: an account with its own caps must set max_daily_budget and max_cpc "
+                "together (max_target_cpa is optional and falls back to that max_cpc)")
         for cap in _CAP_KEYS:
             if cap in rules:
                 value = rules[cap]
@@ -245,13 +256,31 @@ def advertiser_domain() -> str:
 
 def keyword_research() -> dict:
     base, own = _rules()
-    return dict(own.get("keyword_research", base["keyword_research"]))
+    return {**base["keyword_research"], **own.get("keyword_research", {})}
 
 
 def cap(name: str):
     """The active account's own cap (max_daily_budget | max_cpc | max_target_cpa), or None
-    when it has none and the environment default applies."""
-    return _rules()[1].get(name)
+    when it has none and the environment default applies. An account with its own caps
+    always has budget and CPC (enforced at load); its target-CPA cap falls back to its own
+    CPC cap, never to an environment number meant for another currency."""
+    own = _rules()[1]
+    if name == "max_target_cpa" and name not in own:
+        return own.get("max_cpc")
+    return own.get(name)
+
+
+def announce_account_caps() -> None:
+    """Startup notice on stderr: which accounts carry their own spend caps. Those REPLACE
+    the environment caps for that account and may be higher, since they are in the
+    account's own currency."""
+    import sys
+    # Reads what load() already cached; server.main calls load() just before this.
+    for cid, own in sorted((_cache or {}).get("accounts", {}).items()):
+        caps = ", ".join(f"{name}={own[name]}" for name in _CAP_KEYS if name in own)
+        if caps:
+            print(f"mcp-google-ads-safe: account {cid} uses its own spend caps ({caps}); "
+                  "these replace the environment caps for that account.", file=sys.stderr)
 
 
 def caps_source() -> str:

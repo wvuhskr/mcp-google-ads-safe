@@ -273,13 +273,15 @@ def _plain_numbers(node, in_metrics=False):
         if isinstance(value, (dict, list)):
             out[key] = _plain_numbers(value, in_metrics or key == "metrics")
             continue
-        money = key.endswith("_micros") or (in_metrics and key in _MICROS_METRICS)
+        money = ((key.endswith("_micros") and not key.endswith("_fraction_micros"))
+                 or (in_metrics and key in _MICROS_METRICS))
         if in_metrics or money:
             value = _whole_number(value)
         out[key] = value
         if money and isinstance(value, (int, float)) and not isinstance(value, bool):
             plain = key[:-len("_micros")] if key.endswith("_micros") else key + "_amount"
-            out.setdefault(plain, round(value / 1_000_000, 2))
+            # Six places is exact for micros: nothing small or three-decimal is rounded away.
+            out.setdefault(plain, round(value / 1_000_000, 6))
     return out
 
 
@@ -294,15 +296,14 @@ def _readable_row(row, paths):
     for path in paths:
         src, dst, parts = full, out, path.split(".")
         for i, part in enumerate(parts):
-            if not isinstance(src, dict):
-                break
-            key = part if part in src else part + "_"   # proto-plus renames `type` to `type_`
-            if key not in src:
-                break
+            key = part
+            if isinstance(src, dict) and part not in src and part + "_" in src:
+                key = part + "_"                        # proto-plus renames `type` to `type_`
+            value = src.get(key) if isinstance(src, dict) else None
             if i == len(parts) - 1:
-                dst[part] = src[key]
+                dst[part] = value                       # selected but unset shows as null
             else:
-                src, dst = src[key], dst.setdefault(part, {})
+                src, dst = value, dst.setdefault(part, {})
     return _plain_numbers(out)
 
 
@@ -1406,6 +1407,9 @@ def _report_period(customer_id, date_range_start, date_range_end) -> dict:
     computed here and sent as BETWEEN so the provenance states exactly what was queried.
     Dates must be YYYY-MM-DD: they are interpolated into GAQL, so nothing else is allowed."""
     from .rails import RailViolation
+    if bool(date_range_start) != bool(date_range_end):
+        raise RailViolation("give both date_range_start and date_range_end, or neither",
+                            code="BAD_DATE")
     if date_range_start and date_range_end:
         for d in (date_range_start, date_range_end):
             if not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
@@ -1432,14 +1436,16 @@ def _date_clause(period) -> str:
     return f"segments.date BETWEEN '{period['start_date']}' AND '{period['end_date']}'"
 
 
-def readable_report(query, customer_id, page_token=None, period=None) -> dict:
+def readable_report(query, customer_id, page_token=None, period=None, has_limit=False) -> dict:
     """Run one read query and return readable rows plus a provenance block: which account
     (name, currency, time zone), the resolved dates, the exact query, how many rows came
     back out of how many, and whether the answer was cut."""
     meta = account_meta(customer_id)   # cached; always before the report query
     out = gaql(query, customer_id, page_token, readable=True)
     total, returned = out["total_results_count"], out["returned_count"]
-    truncated = (not out["pages_complete"]) or (type(total) is int and total > returned)
+    # A resumed page is complete when no further page follows; total counts every page.
+    truncated = (not out["pages_complete"]) or (
+        page_token is None and type(total) is int and total > returned)
     prov = {"account": meta, "query": query, "rows_returned": returned, "rows_total": total,
             "truncated": truncated}
     if period:
@@ -1448,8 +1454,9 @@ def readable_report(query, customer_id, page_token=None, period=None) -> dict:
         prov["how_to_get_more"] = (
             f"Showing {returned:,} of {total:,} rows. " if type(total) is int else "") + (
             f"Raise limit (up to {REPORT_LIMIT_MAX:,}), shorten the date range, or use "
-            "run_gaql with a WHERE filter; for run_gaql, pass next_page_token back as "
-            "page_token.")
+            "run_gaql with a WHERE filter." if has_limit else
+            "Pass next_page_token back as page_token for the next page, or narrow it with "
+            "run_gaql and a WHERE filter or LIMIT.")
     if "conversions" in query:
         prov["conversions_note"] = _CONVERSIONS_NOTE
     if "micros" in query or any(f"metrics.{m}" in query for m in _MICROS_METRICS):
@@ -1481,7 +1488,7 @@ def _performance_report(customer_id, select, source, where, order, date_range_st
     conditions = " AND ".join([*where, _date_clause(period)])
     query = (f"SELECT {select} FROM {source} WHERE {conditions} "
              f"ORDER BY {order} DESC LIMIT {limit}")
-    return readable_report(query, customer_id, page_token, period)
+    return readable_report(query, customer_id, page_token, period, has_limit=True)
 
 
 def campaign_performance(customer_id, date_range_start=None, date_range_end=None,

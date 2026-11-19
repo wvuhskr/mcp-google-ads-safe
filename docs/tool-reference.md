@@ -91,7 +91,7 @@ query; current bounded read evidence is recorded in [release readiness](release-
 `get_account_info`, the five performance reports, `get_negative_keywords`,
 `search_geo_targets`, `get_entities` and `run_gaql` return readable rows: status and type
 names, only the fields the query selected, counts as numbers, and money both in Google's
-micros and in whole currency units (`cost` beside `cost_micros`; `average_cpc_amount` beside
+micros and in whole currency units, to six decimal places (`cost` beside `cost_micros`; `average_cpc_amount` beside
 `average_cpc`, and likewise for the other average and cost-per metrics). `run_gaql(raw=True)`
 returns Google's untouched rows instead.
 

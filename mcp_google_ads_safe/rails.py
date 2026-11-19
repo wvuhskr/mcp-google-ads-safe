@@ -1281,6 +1281,7 @@ def _create_draft_locked(tool, preview, plan, fingerprint, validate_fn) -> dict:
     except RailViolation as exc:
         _audit_refused(tool, exc, plan)
         raise
+    display = _draft_account(plan)   # before anything is stored: a failure leaves no draft
     _prune_expired_drafts()
     digest = preview.get("digest") or plan_digest(plan)
     d = Draft(id=uuid.uuid4().hex[:12], tool=tool, preview=preview, plan=plan,
@@ -1298,7 +1299,7 @@ def _create_draft_locked(tool, preview, plan, fingerprint, validate_fn) -> dict:
         _DRAFTS.pop(d.id, None)
         raise
     return {"draft_id": d.id, "dry_run": True, "preview": preview,
-            **_draft_account(plan),
+            **display,
             "next": f"confirm_and_apply(draft_id='{d.id}')"}
 
 

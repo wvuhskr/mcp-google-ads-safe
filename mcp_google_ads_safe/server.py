@@ -16,6 +16,7 @@ def main():
         from . import setup_wizard
         sys.exit(setup_wizard.main(reauth=sys.argv[1] == "reauth"))
     settings.load()      # loud failure on a bad advertiser.yaml, before serving
+    settings.announce_account_caps()
     client.preflight()   # M1 gate: prove the login manager is an ancestor of every read id; fail boot loudly
     mcp.run()
 

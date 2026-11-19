@@ -54,6 +54,8 @@ def _change_account(customer_id):
     """The account a CHANGE targets: the named customer_id, else the configured default
     (refused under a pick). Also says which account's house rules and caps apply."""
     cid = _change_default() if customer_id is None else customer_id
+    if cid is None:
+        raise rails.RailViolation("no customer_id given and GOOGLE_ADS_CUSTOMER_ID is unset")
     settings.set_account(cid)
     return cid
 

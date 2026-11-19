@@ -665,9 +665,11 @@ def test_date_clause_default_last_30_days_and_explicit_between():
                      "basis": "dates given"}
     assert client._date_clause(given) == (
         "segments.date BETWEEN '2026-01-01' AND '2026-01-31'")
-    # discriminating: only ONE side given still defaults (BETWEEN needs both)
-    assert client._report_period(CID, "2026-01-01", None)["basis"].startswith("default")
-    assert client._report_period(CID, None, "2026-01-31")["basis"].startswith("default")
+    # only ONE side given is refused, not silently replaced by the default window
+    for one_sided in (("2026-01-01", None), (None, "2026-01-31")):
+        with pytest.raises(rails.RailViolation) as lone:
+            client._report_period(CID, *one_sided)
+        assert lone.value.code == "BAD_DATE"
     with pytest.raises(rails.RailViolation) as exc:
         client._report_period(CID, "yesterday", "2026-01-31")
     assert exc.value.code == "BAD_DATE"

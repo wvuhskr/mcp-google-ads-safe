@@ -5,6 +5,7 @@ client configuration. It never reads, prints or stores a secret."""
 import json
 import os
 import re
+import shlex
 
 import yaml
 
@@ -22,7 +23,14 @@ class _GiveUp(Exception):
 def _path(answer: str) -> str:
     """A typed or dragged-in path: outer quotes and spaces dropped, ~ expanded, made
     absolute."""
-    return os.path.abspath(os.path.expanduser(answer.strip().strip("'\"").strip()))
+    text = answer.strip()
+    try:
+        # A path dragged into a terminal arrives shell-escaped (My\ Folder) or quoted.
+        parts = shlex.split(text)
+        text = parts[0] if len(parts) == 1 else text
+    except ValueError:
+        pass
+    return os.path.abspath(os.path.expanduser(text.strip("'\"").strip()))
 
 
 def _ask(ask, question, parse, complaint):
@@ -56,7 +64,7 @@ def _config_text(profile: str) -> str:
     env = {"GOOGLE_ADS_YAML": profile, "GOOGLE_ADS_READ_SCOPE": "manager"}
     block = {"mcpServers": {"google-ads-safe": {
         "command": "uvx", "args": ["--from", _SOURCE, "mcp-google-ads-safe"], "env": env}}}
-    flags = " ".join(f"-e {key}={value}" for key, value in env.items())
+    flags = " ".join("-e " + shlex.quote(f"{key}={value}") for key, value in env.items())
     return "\n".join([
         "",
         "Sign-in saved. Connect your assistant with ONE of these.",

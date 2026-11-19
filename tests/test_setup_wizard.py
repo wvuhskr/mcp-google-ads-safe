@@ -164,3 +164,28 @@ def test_readme_names_every_tool_and_the_current_version():
     version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
     assert f"Version {version}." in readme
     assert f"## {version} " in (root / "CHANGELOG.md").read_text()
+
+
+def test_a_path_dragged_into_terminal_with_escaped_spaces_is_understood(wiz):
+    folder = wiz["home"] / "My Folder"
+    folder.mkdir()
+    (folder / "client_secret (1).json").write_text("{}")
+    dragged = str(folder / "client_secret (1).json").replace(" ", "\\ ").replace(
+        "(", "\\(").replace(")", "\\)") + " "
+    assert wiz["run"](dragged, "1234567890", "") == 0
+    assert wiz["calls"][0][1] == str(folder / "client_secret (1).json")
+
+
+def test_the_printed_command_survives_a_path_with_spaces(wiz, capsys):
+    import shlex
+    target = wiz["home"] / "My Folder" / "google-ads.yaml"
+    assert wiz["run"](str(wiz["client_json"]), "1234567890", str(target)) == 0
+    line = next(x for x in capsys.readouterr().out.splitlines() if "claude mcp add" in x)
+    assert f"GOOGLE_ADS_YAML={target}" in shlex.split(line)
+
+
+def test_publish_workflow_tests_and_checks_the_tag_before_building():
+    import pathlib
+    text = (pathlib.Path(__file__).resolve().parents[1] / ".github/workflows/publish.yml").read_text()
+    assert text.index("pytest") < text.index("python -m build") < text.index("gh-action-pypi-publish")
+    assert "GITHUB_REF_NAME" in text and text.index("GITHUB_REF_NAME") < text.index("python -m build")
