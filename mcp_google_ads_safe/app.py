@@ -11,6 +11,7 @@ except ModuleNotFoundError:
     from mcp.server.mcpserver import MCPServer as _Server
     from mcp.server.mcpserver.exceptions import ToolError as _ToolError
 
+from . import settings
 from .rails import RailViolation, UnknownWriteOutcome
 
 
@@ -250,6 +251,7 @@ class _SafetyServer(_Server):
             @wraps(fn)
             async def registered(*args, **kwargs):
                 try:
+                    settings.set_account(None)  # each call names its own account
                     result = fn(*args, **kwargs)
                     return await result if inspect.isawaitable(result) else result
                 except (RailViolation, UnknownWriteOutcome) as error:

@@ -1379,6 +1379,19 @@ def account_meta(customer_id) -> dict:
     return meta
 
 
+def known_account(customer_id) -> dict:
+    """Name and currency of an account IF an earlier report, pick or manager-scope check
+    already learned them. Never asks Google: change previews use this so drafting a change
+    adds no read of its own."""
+    cid = _digits(customer_id)
+    found = _ACCOUNT_META_CACHE.get(cid)
+    if found is None:
+        found = next((entry[0] for (_, known), entry in _DESCENDANT_CACHE.items()
+                      if known == cid), {})
+    return {"customer_id": cid, "descriptive_name": found.get("descriptive_name"),
+            "currency_code": found.get("currency_code")}
+
+
 def _report_limit(limit) -> int:
     from .rails import RailViolation
     if type(limit) is not int or not 1 <= limit <= REPORT_LIMIT_MAX:

@@ -92,18 +92,21 @@ def parse_bool_env(name: str, default: bool = False) -> bool:
 
 def max_daily_budget() -> float:
     # Cap in the account's currency (Google accounts are not all USD). Default 1000.
-    return parse_positive_float_env("GOOGLE_ADS_MAX_DAILY_BUDGET", 1000)
+    own = settings.cap("max_daily_budget")
+    return own if own is not None else parse_positive_float_env("GOOGLE_ADS_MAX_DAILY_BUDGET", 1000)
 
 
 def max_cpc() -> float:
     # Cap in the account's currency. Default 50.
-    return parse_positive_float_env("GOOGLE_ADS_MAX_CPC", 50)
+    own = settings.cap("max_cpc")
+    return own if own is not None else parse_positive_float_env("GOOGLE_ADS_MAX_CPC", 50)
 
 
 def max_target_cpa() -> float:
     # Separate cap for target CPA so raising it for realistic tCPA values does not silently
     # raise the manual CPC ceiling. Unset -> falls back to GOOGLE_ADS_MAX_CPC.
-    return parse_positive_float_env("GOOGLE_ADS_MAX_TARGET_CPA", max_cpc())
+    own = settings.cap("max_target_cpa")
+    return own if own is not None else parse_positive_float_env("GOOGLE_ADS_MAX_TARGET_CPA", max_cpc())
 
 
 def draft_ttl_seconds() -> float:
@@ -331,11 +334,19 @@ def _check_valid_amount(amount, label: str) -> None:
         raise RailViolation(f"{label} {amount} must be a finite positive number")
 
 
+def _cap_label(name: str, env_label: str) -> str:
+    """Where the cap that just refused came from, so the message says what to change."""
+    if settings.cap(name) is not None:
+        return f"{name} for account {settings.active_account()} in {settings.config_path()}"
+    return env_label
+
+
 def check_budget(amount) -> None:
     _check_valid_amount(amount, "daily budget")
     if amount > max_daily_budget():
         raise RailViolation(
-            f"daily budget {amount} exceeds cap {max_daily_budget()} (GOOGLE_ADS_MAX_DAILY_BUDGET)",
+            f"daily budget {amount} exceeds cap {max_daily_budget()} "
+            f"({_cap_label('max_daily_budget', 'GOOGLE_ADS_MAX_DAILY_BUDGET')})",
             code="CAP_EXCEEDED")
 
 
@@ -343,7 +354,8 @@ def check_bid(amount) -> None:
     _check_valid_amount(amount, "bid")
     if amount > max_cpc():
         raise RailViolation(
-            f"bid {amount} exceeds cap {max_cpc()} (GOOGLE_ADS_MAX_CPC)",
+            f"bid {amount} exceeds cap {max_cpc()} "
+            f"({_cap_label('max_cpc', 'GOOGLE_ADS_MAX_CPC')})",
             code="CAP_EXCEEDED")
 
 
@@ -351,8 +363,9 @@ def check_target_cpa(amount) -> None:
     _check_valid_amount(amount, "target CPA")
     if amount > max_target_cpa():
         raise RailViolation(
-            f"target CPA {amount} exceeds cap {max_target_cpa()} "
-            "(GOOGLE_ADS_MAX_TARGET_CPA, falls back to GOOGLE_ADS_MAX_CPC)",
+            f"target CPA {amount} exceeds cap {max_target_cpa()} ("
+            + _cap_label("max_target_cpa",
+                         "GOOGLE_ADS_MAX_TARGET_CPA, falls back to GOOGLE_ADS_MAX_CPC") + ")",
             code="CAP_EXCEEDED")
 
 
@@ -1285,7 +1298,26 @@ def _create_draft_locked(tool, preview, plan, fingerprint, validate_fn) -> dict:
         _DRAFTS.pop(d.id, None)
         raise
     return {"draft_id": d.id, "dry_run": True, "preview": preview,
+            **_draft_account(plan),
             "next": f"confirm_and_apply(draft_id='{d.id}')"}
+
+
+def _draft_account(plan) -> dict:
+    """Which account a draft changes and the spend caps that apply to it, shown beside
+    every preview. Display only: never part of the preview, digest or fingerprint. The name
+    and currency appear when an earlier report, pick or manager-scope check already learned
+    them; drafting a change makes no extra request to fill them in."""
+    cid = _normalize_customer_id(_plan_customer_id(plan) or "")
+    meta = client.known_account(cid)
+    currency = meta.get("currency_code")
+    try:
+        caps = {"max_daily_budget": max_daily_budget(), "max_cpc": max_cpc(),
+                "max_target_cpa": max_target_cpa(), "currency_code": currency,
+                "source": settings.caps_source()}
+    except Exception:
+        caps = None
+    return {"account": {"customer_id": cid, "descriptive_name": meta.get("descriptive_name"),
+                        "currency_code": currency}, "caps": caps}
 
 
 def _is_transport_error(e: Exception) -> bool:
@@ -1308,6 +1340,8 @@ def _apply_draft_locked(draft_id: str) -> dict:
     try:
         check_writes_enabled()  # before pop -- a refused apply must NOT consume the draft
         if peeked is not None:
+            # The draft's own account decides which house rules and caps re-apply here.
+            settings.set_account(_plan_customer_id(peeked.plan))
             if (isinstance(peeked.plan, RecommendationActionPlan) or getattr(peeked.plan, 'kind', None) == 'recommendation'):
                 if getattr(peeked.plan, 'rpc', None) == 'apply':
                     check_apply_recommendation_enabled()

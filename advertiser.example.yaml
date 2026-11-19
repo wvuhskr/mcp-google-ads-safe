@@ -1,0 +1,50 @@
+# Advertiser settings for mcp-google-ads-safe. Every key is optional.
+#
+# Copy this file to ~/.mcp-google-ads-safe/advertiser.yaml (or point the
+# GOOGLE_ADS_ADVERTISER_CONFIG environment variable at your copy) and edit it.
+# A mistake in this file stops the server at startup and names the problem.
+
+# Only final URLs on this website (or its subdomains) are accepted in new ads.
+# Leave it out to accept any website.
+advertiser_domain: example.com
+
+# Words that must never appear in ad text, keywords or names. Not case sensitive.
+blocked_terms:
+  - guaranteed
+  - cheapest
+
+# Defaults for keyword research (discover_keywords, get_keyword_forecasts).
+# Find location and language numbers with the search_geo_targets tool or in
+# Google's geo target and language code lists.
+keyword_research:
+  geo_target_constant_ids: [2840]     # 2840 = United States; at most 10
+  language_constant_id: 1000          # 1000 = English
+  keyword_plan_network: GOOGLE_SEARCH
+  include_adult_keywords: false
+
+# Agencies: rules for one client account, keyed by its 10-digit account number
+# (dashes are fine). Anything not set here falls back to the values above.
+#   advertiser_domain  replaces the default website for this account
+#   blocked_terms      are ADDED to the list above, never replace it
+#   keyword_research   replaces the default block for this account
+#   max_daily_budget, max_cpc, max_target_cpa
+#                      spend limits in THIS account's own currency. They replace
+#                      the GOOGLE_ADS_MAX_DAILY_BUDGET / GOOGLE_ADS_MAX_CPC /
+#                      GOOGLE_ADS_MAX_TARGET_CPA environment limits for this
+#                      account only, so a euro account and a yen account can
+#                      each have a sensible number.
+accounts:
+  "123-456-7890":
+    advertiser_domain: client-one.example
+    blocked_terms:
+      - free
+    max_daily_budget: 200
+    max_cpc: 8
+    max_target_cpa: 120
+  "234-567-8901":
+    advertiser_domain: client-two.example
+    keyword_research:
+      geo_target_constant_ids: [2392]   # 2392 = Japan
+      language_constant_id: 1005        # 1005 = Japanese
+    max_daily_budget: 30000
+    max_cpc: 900

@@ -31,6 +31,7 @@ def _write(tmp_path, content, name="advertiser.yaml"):
 def test_missing_file_gives_defaults(tmp_path):
     result = settings.load(str(tmp_path / "does-not-exist.yaml"))
     assert result == {
+        "accounts": {},
         "blocked_terms": [],
         "advertiser_domain": "",
         "keyword_research": _DEFAULT_KEYWORD_RESEARCH,
@@ -181,6 +182,7 @@ keyword_research:
   include_adult_keywords: true
 """))
     assert result == {
+        "accounts": {},
         "blocked_terms": ["sewage", "backup"],
         "advertiser_domain": "example.com",
         "keyword_research": {
