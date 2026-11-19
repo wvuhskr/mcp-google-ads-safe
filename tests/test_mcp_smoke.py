@@ -140,7 +140,9 @@ def test_representative_read_and_write_flow_crosses_mcp_boundary(
             {"campaign_id": "77", "daily_budget": "75", "customer_id": CID},
         )
         (draft_id,) = set(rails._DRAFTS) - drafts_before
-        draft_payload = json.loads(draft_result.content[0].text)
+        # mcp 2.x returns a result object; 1.x returns the content list itself
+        draft_content = getattr(draft_result, "content", draft_result)
+        draft_payload = json.loads(draft_content[0].text)
         assert draft_payload["draft_id"] == draft_id
         assert draft_payload["dry_run"] is True
         assert not fake_client.dispatch_calls
@@ -148,7 +150,8 @@ def test_representative_read_and_write_flow_crosses_mcp_boundary(
         apply_result = await mcp.call_tool(
             "confirm_and_apply", {"draft_id": draft_id}
         )
-        apply_payload = json.loads(apply_result.content[0].text)
+        apply_content = getattr(apply_result, "content", apply_result)
+        apply_payload = json.loads(apply_content[0].text)
         assert apply_payload["applied"] is True
         assert apply_payload["draft_id"] == draft_id
         assert len(fake_client.dispatch_calls) == 1

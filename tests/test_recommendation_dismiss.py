@@ -202,7 +202,7 @@ def test_expiry_avoids_reads(dismissal):
 def test_mcp_rejects_number_without_reads(dismissal):
     async def call():
         return await app.mcp.call_tool('dismiss_recommendation', {'recommendation_id': 7})
-    from mcp.server.mcpserver.exceptions import ToolError
+    ToolError = app._ToolError  # same class under mcp 1.x and 2.x
     with pytest.raises(ToolError, match='valid string'):
         asyncio.run(call())
     assert not dismissal[0]['reads']

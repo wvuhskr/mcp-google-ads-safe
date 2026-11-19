@@ -17,6 +17,17 @@ from google.ads.googleads.client import GoogleAdsClient as _RealGoogleAdsClient
 
 from mcp_google_ads_safe import audit, client, settings
 
+# The suite is written against the mcp 2.x names. On the oldest supported SDK (1.30.x) the
+# same fields exist under their 1.x spellings, so expose the 2.x names there too. Test-only:
+# the server itself uses neither attribute.
+from mcp import types as _mcp_types  # noqa: E402
+
+for _model, _new, _old in ((_mcp_types.Tool, "input_schema", "inputSchema"),
+                           (_mcp_types.Tool, "output_schema", "outputSchema"),
+                           (_mcp_types.CallToolResult, "is_error", "isError")):
+    if _new not in _model.model_fields:
+        setattr(_model, _new, property(lambda self, _old=_old: getattr(self, _old)))
+
 # A test customer id used as the default account throughout; the digits match the customer
 # segment of DEFAULT_BUDGET_INFO's resource name.
 TEST_CUSTOMER_ID = "1234567890"
