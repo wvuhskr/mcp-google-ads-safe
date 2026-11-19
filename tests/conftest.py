@@ -15,12 +15,12 @@ import pytest
 # requests and we parse real responses — no network anywhere.
 from google.ads.googleads.client import GoogleAdsClient as _RealGoogleAdsClient
 
-from mcp_google_ads_safe import audit, client, settings
-
 # The suite is written against the mcp 2.x names. On the oldest supported SDK (1.30.x) the
 # same fields exist under their 1.x spellings, so expose the 2.x names there too. Test-only:
 # the server itself uses neither attribute.
 from mcp import types as _mcp_types  # noqa: E402
+
+from mcp_google_ads_safe import audit, client, settings
 
 for _model, _new, _old in ((_mcp_types.Tool, "input_schema", "inputSchema"),
                            (_mcp_types.Tool, "output_schema", "outputSchema"),
@@ -60,9 +60,11 @@ def _deny_real_provider(monkeypatch, tmp_path):
     monkeypatch.setenv('GOOGLE_ADS_YAML', str(tmp_path / 'no-credentials.yaml'))
     client._CLIENT_CACHE.clear()
     client._DESCENDANT_CACHE.clear()
+    client._ACCOUNT_META_CACHE.clear()
     yield
     client._CLIENT_CACHE.clear()
     client._DESCENDANT_CACHE.clear()
+    client._ACCOUNT_META_CACHE.clear()
 
 
 
@@ -246,6 +248,10 @@ class _FakeService:
             raise self.owner.mutate_error
         return self.owner.mutate_response
 
+    def search_google_ads_fields(self, request=None):
+        self.owner.field_requests.append(request)
+        return list(self.owner.field_responses)
+
     def apply_recommendation(self, request=None):
         self.owner.reco_calls.append(("apply", request))
         return self.owner.reco_response
@@ -264,6 +270,8 @@ class FakeGoogleAdsClient:
         self.login_customer_id = login_customer_id
         self.search_responses = {}
         self.search_requests = []
+        self.field_responses = []
+        self.field_requests = []
         self.mutate_calls = []
         self.mutate_response = None
         self.mutate_error = None

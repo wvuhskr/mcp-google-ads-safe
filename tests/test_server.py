@@ -46,10 +46,29 @@ def test_run_gaql_refuses_non_allowlisted_customer(monkeypatch, fake_client):
     assert exc.value.code == "NOT_ALLOWLISTED"
 
 
-def test_run_gaql_returns_fake_envelope_for_allowlisted_customer(fake_client):
-    result = tools.run_gaql("SELECT campaign.id FROM campaign", customer_id=TEST_CUSTOMER_ID)
-    assert result == {"results": [], "next_page_token": None, "account": {
-        "customer_id": TEST_CUSTOMER_ID, "selected_by": "customer_id"}}
+def test_run_gaql_returns_fake_envelope_for_allowlisted_customer(monkeypatch, fake_client):
+    from mcp_google_ads_safe import client
+    seen = []
+
+    def fake_gaql(q, cid, page_token=None, readable=False):
+        seen.append(readable)
+        return {"rows": [], "returned_count": 0, "total_results_count": 0,
+                "pages_complete": True, "next_page_token": None, "query_limited": False}
+
+    monkeypatch.setattr(client, "gaql", fake_gaql)
+    query = "SELECT campaign.id FROM campaign"
+    result = tools.run_gaql(query, customer_id=TEST_CUSTOMER_ID)
+    assert seen == [True]   # readable rows by default
+    assert result["rows"] == [] and result["next_page_token"] is None
+    assert result["account"] == {"customer_id": TEST_CUSTOMER_ID, "selected_by": "customer_id"}
+    assert result["provenance"]["query"] == query
+    assert result["provenance"]["rows_returned"] == 0
+    assert result["provenance"]["truncated"] is False
+    # raw=True returns the untouched client.gaql envelope plus the account label
+    raw = tools.run_gaql(query, customer_id=TEST_CUSTOMER_ID, raw=True)
+    assert seen == [True, False]
+    assert "provenance" not in raw and raw["rows"] == []
+    assert raw["account"] == result["account"]
 
 
 # --- 6: run_gaql with no customer_id anywhere -----------------------------------------------

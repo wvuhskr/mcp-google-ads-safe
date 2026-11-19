@@ -153,12 +153,70 @@ def current_account() -> dict:
 
 
 @mcp.tool()
-def run_gaql(query: str, customer_id: str | None = None, page_token: str | None = None) -> dict:
-    """Run a GAQL read query against one customer account. Refuses before any API call if
-    the customer_id is not on the READ allowlist (GOOGLE_ADS_READ_CUSTOMER_IDS /
-    GOOGLE_ADS_CUSTOMER_ID)."""
+def run_gaql(query: str, customer_id: str | None = None, page_token: str | None = None,
+             raw: bool = False) -> dict:
+    """Run one read-only GAQL query on one account. Use describe-style field names
+    (campaign.name, metrics.clicks, segments.date). Rows come back readable: status and
+    type NAMES, only the fields selected, counts as numbers, and money both in Google's
+    micros and in whole currency units (cost, *_amount). A provenance block names the
+    account, its currency and time zone, the query, and how many rows came back out of how
+    many. One page of up to 10,000 rows per call: add a LIMIT, and pass next_page_token
+    back as page_token for more. raw=True returns Google's untouched rows (integer enums,
+    micros as text) for scripts. Refused before any request if the account is not readable.
+
+    describe_fields lists what each resource can select. Recipes, each run read-only
+    against a live account on 2026-11-19 (swap the period: LAST_7_DAYS, LAST_14_DAYS,
+    LAST_30_DAYS, THIS_MONTH, LAST_MONTH, or BETWEEN '2026-01-01' AND '2026-01-31'):
+
+    By campaign:
+      SELECT campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS AND
+      campaign.status != 'REMOVED' ORDER BY metrics.cost_micros DESC LIMIT 50
+    By day (whole account):
+      SELECT segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM customer WHERE segments.date DURING LAST_14_DAYS
+      ORDER BY segments.date
+    By device:
+      SELECT segments.device, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS
+    By hour of day:
+      SELECT segments.hour, metrics.clicks, metrics.cost_micros, metrics.conversions
+      FROM campaign WHERE segments.date DURING LAST_30_DAYS
+    Search impression share and what was lost to budget or rank:
+      SELECT campaign.name, metrics.search_impression_share,
+      metrics.search_budget_lost_impression_share,
+      metrics.search_rank_lost_impression_share FROM campaign WHERE segments.date DURING
+      LAST_30_DAYS AND campaign.advertising_channel_type = 'SEARCH' AND
+      campaign.status = 'ENABLED'
+    Conversions by conversion action:
+      SELECT segments.conversion_action_name, metrics.conversions,
+      metrics.conversions_value FROM customer WHERE segments.date DURING LAST_30_DAYS
+    Conversion value and return on ad spend (divide conversions_value by cost):
+      SELECT campaign.name, metrics.cost_micros, metrics.conversions,
+      metrics.conversions_value FROM campaign WHERE segments.date DURING LAST_30_DAYS AND
+      metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC LIMIT 50
+    Conversions dated by when the conversion happened:
+      SELECT segments.date, metrics.conversions_by_conversion_date,
+      metrics.conversions_value_by_conversion_date FROM customer WHERE segments.date
+      DURING LAST_14_DAYS ORDER BY segments.date
+    """
     cid, account = _read_account(customer_id)
-    return _labelled(client.gaql(query, cid, page_token), account)
+    if raw:
+        return _labelled(client.gaql(query, cid, page_token), account)
+    return _labelled(client.readable_report(query, cid, page_token), account)
+
+
+@mcp.tool()
+def describe_fields(resource: str | None = None, category: str | None = None,
+                    name_contains: str | None = None) -> dict:
+    """Look up what a run_gaql query can ask for, so nobody has to know Google's field names.
+    With no resource: the common things to report on (campaign, ad_group, keyword_view,
+    search_term_view ...) in plain words. With a resource: every field a query FROM it can
+    select, with its type and whether it can be filtered or sorted, plus how many metrics
+    and segments it takes. category='metrics' or 'segments' lists those; name_contains
+    narrows any list (for example describe_fields('campaign', 'metrics', 'cost')). Reads
+    Google's field catalog only: no account data, no account needed."""
+    return client.describe_fields(resource, category, name_contains)
 
 
 @mcp.tool()
@@ -271,52 +329,67 @@ def get_account_info(customer_id: str | None = None) -> dict:
 
 @mcp.tool()
 def get_campaign_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                             date_range_end: str | None = None,
-                             page_token: str | None = None) -> dict:
-    """Campaign performance report (impressions/clicks/cost/conversions), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
+                             date_range_end: str | None = None, page_token: str | None = None,
+                             limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per campaign: impressions, clicks, cost, conversions, conversion value, CTR and
+    average CPC, highest spend first. Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.campaign_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.campaign_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_ad_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                       date_range_end: str | None = None,
-                       page_token: str | None = None) -> dict:
-    """Ad-level performance report (responsive search ad text + metrics), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
+                       date_range_end: str | None = None, page_token: str | None = None,
+                       limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per ad: responsive search ad text, final URLs, status and metrics, highest spend
+    first. Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.ad_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.ad_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_keyword_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                            date_range_end: str | None = None,
-                            page_token: str | None = None) -> dict:
-    """Keyword-level performance report (quality score + metrics), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
+                            date_range_end: str | None = None, page_token: str | None = None,
+                            limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per keyword: text, match type, quality score and metrics, highest spend first.
+    Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.keyword_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.keyword_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_search_terms(customer_id: str | None = None, date_range_start: str | None = None,
-                     date_range_end: str | None = None,
-                     page_token: str | None = None) -> dict:
-    """Search-terms report, ordered by clicks descending, capped at 200 rows. Defaults to
-    the last 30 days when no explicit date range is given."""
+                     date_range_end: str | None = None, page_token: str | None = None,
+                     limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per search term people typed, with its campaign, ad group and metrics, most
+    clicks first. Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.search_terms(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.search_terms(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_geo_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                        date_range_end: str | None = None,
-                        page_token: str | None = None) -> dict:
-    """Geographic performance report, ordered by spend descending. Defaults to the last 30
-    days when no explicit date range is given."""
+                        date_range_end: str | None = None, page_token: str | None = None,
+                        limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per campaign and location with metrics, highest spend first. Last 30 days (not
+    including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.geo_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.geo_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()

@@ -373,13 +373,13 @@ def test_registered_inventory_and_call(fake_client, monkeypatch):
         "get_negative_keywords",
         "search_geo_targets",
         "get_entities",
-        "list_accounts", "find_accounts", "use_account", "current_account",
+        "list_accounts", "find_accounts", "use_account", "current_account", "describe_fields",
     } | {v[0] for v in CASES}
 
     async def check():
         inventory = await mcp.list_tools()
         assert {t.name for t in inventory} == expected
-        assert len(inventory) == 63
+        assert len(inventory) == 64
         for tool in inventory:
             json.dumps(tool.input_schema)
         monkeypatch.setattr(client, "list_accounts", lambda: [{"customer_id": CID}])

@@ -26,7 +26,7 @@ EXPECTED_TOOLS = {
     "get_negative_keywords",
     "search_geo_targets",
     "get_entities",
-    "list_accounts", "find_accounts", "use_account", "current_account",
+    "list_accounts", "find_accounts", "use_account", "current_account", "describe_fields",
     "draft_keywords",
     "remove_keywords",
     "update_keyword_bid",
@@ -41,7 +41,7 @@ EXPECTED_TOOLS = {
 def test_all_59_tools_publish_serializable_input_schemas():
     async def check():
         inventory = await mcp.list_tools()
-        assert len(inventory) == 63
+        assert len(inventory) == 64
         assert {tool.name for tool in inventory} == EXPECTED_TOOLS
         for tool in inventory:
             json.dumps(tool.input_schema)
@@ -120,10 +120,13 @@ def test_representative_read_and_write_flow_crosses_mcp_boundary(
     monkeypatch.setattr(
         client,
         "gaql",
-        lambda query, customer_id, page_token=None: {
-            "results": [{"campaign": {"id": "11"}}],
-            "next_page_token": None,
+        lambda query, customer_id, page_token=None, readable=False: {
+            "rows": [{"campaign": {"id": "11"}}],
+            "returned_count": 1,
             "total_results_count": 1,
+            "pages_complete": True,
+            "next_page_token": None,
+            "query_limited": False,
         },
     )
 
