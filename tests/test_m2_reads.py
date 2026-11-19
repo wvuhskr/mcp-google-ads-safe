@@ -27,7 +27,12 @@ def test_wrapper_preserves_page_and_unknown_totals(monkeypatch, name, explicit, 
     provider = Mock(return_value=envelope)
     monkeypatch.setattr(client, name, provider)
     kwargs = {"customer_id": cid} if explicit else {}
-    assert getattr(tools, name)(page_token="exact-token", **kwargs) is envelope
+    # The provider envelope passes through untouched; the tool only adds which account
+    # the answer came from and how that account was chosen.
+    assert getattr(tools, name)(page_token="exact-token", **kwargs) == {
+        **envelope, "account": {
+            "customer_id": cid,
+            "selected_by": "customer_id" if explicit else "GOOGLE_ADS_CUSTOMER_ID"}}
     provider.assert_called_once_with(cid, "exact-token")
 
 

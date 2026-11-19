@@ -30,11 +30,21 @@ The error names the file and invalid field. Remove unknown keys and compare it w
 
 Add the manager customer ID as `login_customer_id` in the private credential profile. It must be the manager through which the authorized advertising customers are reachable. Restart the client.
 
-## `ANCESTRY_NOT_DESCENDANT` or `ANCESTRY_TRUNCATED`
+## `ANCESTRY_NOT_DESCENDANT`
 
-`ANCESTRY_NOT_DESCENDANT` means the completed manager-tree scan did not find an authorized read customer below the login manager. Correct the login manager or remove the customer from `GOOGLE_ADS_READ_CUSTOMER_IDS`.
+Startup asked the login manager for every listed account and Google did not return the one named in the message. Correct the login manager, or remove that customer from `GOOGLE_ADS_READ_CUSTOMER_IDS` / `GOOGLE_ADS_WRITE_CUSTOMER_IDS`, and restart. `ANCESTRY_TRUNCATED` no longer exists: since 2.0.0 the check is one request and has no depth or size limit.
 
-`ANCESTRY_TRUNCATED` means the scan could not prove ancestry safely. If it names the depth ceiling and a missing target, use a nearer appropriately authorized login manager. If it says the walk exceeded 500 nodes, the full manager tree itself exceeded the safety ceiling, so reducing the read allowlist does not fix it. Do not bypass either check; choose an appropriately authorized nearer manager and restart.
+## `NOT_UNDER_MANAGER` or `ACCOUNT_NOT_ACTIVE`
+
+Only with `GOOGLE_ADS_READ_SCOPE=manager`. `NOT_UNDER_MANAGER`: the account number is not under the sign-in's manager account; run `find_accounts` to see the ones that are. `ACCOUNT_NOT_ACTIVE`: the account is canceled, suspended, closed or hidden, and only enabled, visible accounts can be read.
+
+## `ACCOUNT_REQUIRED`
+
+A change was requested without a `customer_id` while an account is picked with `use_account`. The pick applies to reports only. Name the `customer_id` on the change, or clear the pick with `use_account()`.
+
+## `BAD_READ_SCOPE`
+
+`GOOGLE_ADS_READ_SCOPE` must be `list` or `manager`.
 
 ## Writes disabled or account unauthorized
 

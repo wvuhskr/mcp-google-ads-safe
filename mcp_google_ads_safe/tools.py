@@ -25,21 +25,125 @@ from pydantic import Field
 from . import client, rails
 from .app import mcp
 
+# The account picked with use_account. Reports only: no change ever resolves through it.
+# ponytail: one pick per server process. A desktop client can share one process across
+# several chats, which is exactly why changes must name their account every time.
+_PICKED: str | None = None
+
+
+def _change_default():
+    """The configured default account for a CHANGE that named no customer_id. Refuses while
+    an account is picked: the pick applies to reports only, and silently sending a change to
+    the configured default instead would be the wrong-account mistake this rule prevents."""
+    if _PICKED:
+        raise rails.RailViolation(
+            "an account is picked with use_account, and the pick applies to reports only — "
+            "pass customer_id explicitly for any change", code="ACCOUNT_REQUIRED")
+    return os.environ.get("GOOGLE_ADS_CUSTOMER_ID")
+
+
+def _pick_or_default():
+    """(account, how it was chosen) for a REPORT that named no customer_id."""
+    if _PICKED:
+        return _PICKED, "use_account"
+    return os.environ.get("GOOGLE_ADS_CUSTOMER_ID"), "GOOGLE_ADS_CUSTOMER_ID"
+
 
 def _resolve_customer_id(customer_id):
-    cid = customer_id or os.environ.get("GOOGLE_ADS_CUSTOMER_ID")
+    cid = customer_id or _change_default()
     if not cid:
         raise rails.RailViolation("no customer_id given and GOOGLE_ADS_CUSTOMER_ID is unset")
     return cid
 
 
+def _read_account(customer_id, strict=False):
+    """Resolve and authorize the account for a REPORT: explicit customer_id, else the
+    use_account pick, else the configured default. Returns (cid, label); every report
+    carries the label so the answer always says which account it came from. strict keeps
+    the canonical-id rule of the tools that had it."""
+    if customer_id if not strict else customer_id is not None:
+        cid, source = customer_id, "customer_id"
+    else:
+        cid, source = _pick_or_default()
+    if strict:
+        if type(cid) is not str or not re.fullmatch(r"[1-9][0-9]*", cid):
+            raise rails.RailViolation("customer_id must be a canonical positive ASCII ID",
+                                      code="BAD_ID")
+    elif not cid:
+        raise rails.RailViolation(
+            "no customer_id given, no account picked with use_account, and "
+            "GOOGLE_ADS_CUSTOMER_ID is unset")
+    rails.check_customer_allowlisted(cid, "read")
+    return cid, {"customer_id": rails._normalize_customer_id(cid), "selected_by": source}
+
+
+def _labelled(result, account):
+    return {**result, "account": account} if isinstance(result, dict) else result
+
+
 @mcp.tool()
 def health_check() -> dict:
-    """Live auth + ancestry probe: proves the credential profile reaches the configured
-    accounts and that the login manager is their ancestor. Lets any failure propagate
-    loudly (no swallowed exceptions)."""
-    client.preflight()
-    return {"ok": True, "accounts": client.list_accounts()}
+    """Live sign-in check. One request proves the credential profile works and that every
+    listed account sits under the login manager. Reports the login manager, the read scope
+    ('list' or 'manager') and how many accounts are reachable. In list scope it also names
+    the listed accounts; in manager scope use find_accounts to search them."""
+    listed = client.preflight()
+    scope = rails.read_scope()
+    out = {"ok": True, "login_manager": client.login_manager_id(), "read_scope": scope}
+    if scope == "manager":
+        out["reachable_accounts"] = client.reachable_account_count()
+        out["next"] = "find_accounts(name_contains=...) searches them by name"
+    else:
+        read_ids = rails.read_customer_ids()
+        out["accounts"] = [
+            {k: a[k] for k in ("customer_id", "descriptive_name", "currency_code")}
+            for a in listed if a["customer_id"] in read_ids]
+        out["reachable_accounts"] = len(out["accounts"])
+    return out
+
+
+@mcp.tool()
+def find_accounts(name_contains: str | None = None, include_managers: bool = False,
+                  include_hidden: bool = False, limit: int = 50,
+                  page_token: str | None = None) -> dict:
+    """Find accounts under the login manager by name, e.g. find_accounts("smith dental").
+    Read-only, one request, no metrics. Each account shows its number (plain and
+    123-456-7890 form), name, currency, time zone, status, whether it is a manager or a test
+    account, its depth under the manager, and whether reports (can_read) and changes
+    (can_write) are allowed on it. Manager and hidden accounts are left out unless asked
+    for. limit is 1 to 200 (default 50); pass next_page_token back as page_token for more."""
+    return client.find_accounts(name_contains, include_managers, include_hidden, limit,
+                                page_token)
+
+
+@mcp.tool()
+def use_account(customer_id: str | None = None) -> dict:
+    """Pick the account that reports use when no customer_id is given, so it need not be
+    repeated. Accepts 1234567890 or 123-456-7890. The pick applies to REPORTS ONLY: every
+    change must still name its customer_id, and is refused while a pick is active if it
+    does not. The pick lasts until changed, cleared (call with no customer_id) or the server
+    restarts, and is shared by every chat using this server."""
+    global _PICKED
+    if not customer_id:
+        _PICKED = None
+        return {"picked": None, "note": "Pick cleared. Reports fall back to the configured "
+                                        "default account, if any."}
+    rails.check_customer_allowlisted(customer_id, "read")
+    cid = rails._normalize_customer_id(customer_id)
+    found = client.find_account(cid)
+    _PICKED = cid
+    return {"picked": found, "note": "Reports now default to this account. Read tools only: "
+                                     "changes must name customer_id every time."}
+
+
+@mcp.tool()
+def current_account() -> dict:
+    """Show which account reports default to: the use_account pick if there is one,
+    otherwise the configured default. Also shows the read scope."""
+    return {"picked": client.find_account(_PICKED) if _PICKED else None,
+            "configured_default": rails._default_customer_id(),
+            "read_scope": rails.read_scope(),
+            "note": "The pick applies to reports only; changes must name customer_id."}
 
 
 @mcp.tool()
@@ -47,9 +151,8 @@ def run_gaql(query: str, customer_id: str | None = None, page_token: str | None 
     """Run a GAQL read query against one customer account. Refuses before any API call if
     the customer_id is not on the READ allowlist (GOOGLE_ADS_READ_CUSTOMER_IDS /
     GOOGLE_ADS_CUSTOMER_ID)."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.gaql(query, cid, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.gaql(query, cid, page_token), account)
 
 
 @mcp.tool()
@@ -145,7 +248,7 @@ def create_portfolio_bidding_strategy(
     This creates inventory only; it does not attach campaigns or begin serving.
     Offline-tested only; concurrent same-name creation can still race the final check.
     """
-    cid = os.environ.get('GOOGLE_ADS_CUSTOMER_ID') if customer_id is None else customer_id
+    cid = _change_default() if customer_id is None else customer_id
     return rails.portfolio_creation_draft(
         rails.CreatePortfolioBiddingStrategyIntent(cid, name, strategy_type, target_cpa, target_roas))
 
@@ -156,9 +259,8 @@ def create_portfolio_bidding_strategy(
 def get_account_info(customer_id: str | None = None) -> dict:
     """Single-row account info (id, descriptive name, currency, time zone, auto-tagging,
     manager flag, status). No page_token -- always at most one row."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.account_info(cid)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.account_info(cid), account)
 
 
 @mcp.tool()
@@ -167,9 +269,8 @@ def get_campaign_performance(customer_id: str | None = None, date_range_start: s
                              page_token: str | None = None) -> dict:
     """Campaign performance report (impressions/clicks/cost/conversions), ordered by spend
     descending. Defaults to the last 30 days when no explicit date range is given."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.campaign_performance(cid, date_range_start, date_range_end, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.campaign_performance(cid, date_range_start, date_range_end, page_token), account)
 
 
 @mcp.tool()
@@ -178,9 +279,8 @@ def get_ad_performance(customer_id: str | None = None, date_range_start: str | N
                        page_token: str | None = None) -> dict:
     """Ad-level performance report (responsive search ad text + metrics), ordered by spend
     descending. Defaults to the last 30 days when no explicit date range is given."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.ad_performance(cid, date_range_start, date_range_end, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.ad_performance(cid, date_range_start, date_range_end, page_token), account)
 
 
 @mcp.tool()
@@ -189,9 +289,8 @@ def get_keyword_performance(customer_id: str | None = None, date_range_start: st
                             page_token: str | None = None) -> dict:
     """Keyword-level performance report (quality score + metrics), ordered by spend
     descending. Defaults to the last 30 days when no explicit date range is given."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.keyword_performance(cid, date_range_start, date_range_end, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.keyword_performance(cid, date_range_start, date_range_end, page_token), account)
 
 
 @mcp.tool()
@@ -200,9 +299,8 @@ def get_search_terms(customer_id: str | None = None, date_range_start: str | Non
                      page_token: str | None = None) -> dict:
     """Search-terms report, ordered by clicks descending, capped at 200 rows. Defaults to
     the last 30 days when no explicit date range is given."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.search_terms(cid, date_range_start, date_range_end, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.search_terms(cid, date_range_start, date_range_end, page_token), account)
 
 
 @mcp.tool()
@@ -211,26 +309,23 @@ def get_geo_performance(customer_id: str | None = None, date_range_start: str | 
                         page_token: str | None = None) -> dict:
     """Geographic performance report, ordered by spend descending. Defaults to the last 30
     days when no explicit date range is given."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.geo_performance(cid, date_range_start, date_range_end, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.geo_performance(cid, date_range_start, date_range_end, page_token), account)
 
 
 @mcp.tool()
 def get_negative_keywords(customer_id: str | None = None, page_token: str | None = None) -> dict:
     """Campaign-level negative keywords. No date range."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.negative_keywords(cid, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.negative_keywords(cid, page_token), account)
 
 
 @mcp.tool()
 def search_geo_targets(query: str, customer_id: str | None = None,
                        page_token: str | None = None) -> dict:
     """Search geo_target_constant by display-name substring (e.g. 'Orlando')."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.geo_targets(cid, query, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.geo_targets(cid, query, page_token), account)
 
 
 @mcp.tool()
@@ -238,14 +333,15 @@ def get_entities(entity_type: str, ids: list[str] | None = None, parent_id: str 
                  customer_id: str | None = None, page_token: str | None = None) -> dict:
     """Generic entity lookup across campaign|ad_group|keyword|ad, optionally filtered by ids
     and/or parent_id (e.g. ad_group_ids under a campaign). campaign has no parent scope."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.entities(cid, entity_type, ids, parent_id, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.entities(cid, entity_type, ids, parent_id, page_token), account)
 
 
 @mcp.tool()
 def list_accounts() -> list[dict]:
-    """List only READ-allowlisted customer accounts."""
+    """List the accounts named in configuration (the read list; in manager read scope, the
+    read and write lists). To search every account under the manager by name, use
+    find_accounts instead."""
     return client.list_accounts()
 
 
@@ -388,9 +484,8 @@ def list_extensions(customer_id: str | None = None, page_token: str | None = Non
     """Read nonremoved campaign-level asset links, including sitelinks, callouts and
     structured snippets. This is not customer, ad-group, inherited or asset-group inventory.
     Return one paginated GAQL envelope; follow next_page_token to continue."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.list_extensions(cid, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.list_extensions(cid, page_token), account)
 
 
 @mcp.tool()
@@ -404,11 +499,8 @@ def get_policy_issues(
     Follow returned bound tokens; an empty page alone does not prove completion or a
     policy-clean account. Raw policy details and paging fields remain unchanged.
     """
-    cid = os.environ.get("GOOGLE_ADS_CUSTOMER_ID") if customer_id is None else customer_id
-    if type(cid) is not str or not re.fullmatch(r"[1-9][0-9]*", cid):
-        raise rails.RailViolation("customer_id must be a canonical positive ASCII ID", code="BAD_ID")
-    rails.check_customer_allowlisted(cid, "read")
-    result = client.get_policy_issues(cid, page_token)
+    cid, account = _read_account(customer_id, strict=True)
+    result = _labelled(client.get_policy_issues(cid, page_token), account)
     return {**result, "source": {
         "customer_id": cid,
         "tool": "Google Ads API v25 GoogleAdsService.Search",
@@ -424,9 +516,8 @@ def get_conversion_actions(customer_id: str | None = None, page_token: str | Non
     Includes owner account and attribution settings; does not route to another account.
     This is not exhaustive goal or bidding usage: primary_for_goal=false actions can still
     be biddable in custom goals. Return one paginated GAQL envelope; no writes."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.get_conversion_actions(cid, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.get_conversion_actions(cid, page_token), account)
 
 
 @mcp.tool()
@@ -434,9 +525,8 @@ def list_recommendations(customer_id: str | None = None, page_token: str | None 
     """Read non-dismissed Google recommendations in one paginated GAQL envelope.
     Impact values are Google's estimates, not measured results or our approval.
     Does not rank, approve, apply or dismiss recommendations."""
-    cid = _resolve_customer_id(customer_id)
-    rails.check_customer_allowlisted(cid, "read")
-    return client.list_recommendations(cid, page_token)
+    cid, account = _read_account(customer_id)
+    return _labelled(client.list_recommendations(cid, page_token), account)
 
 
 @mcp.tool()
@@ -623,7 +713,7 @@ def apply_recommendation(recommendation_id: str, customer_id: str | None = None)
     Default-off gate and confirmation required. No validation-only or automated rollback.
     Unknown outcomes require reading account state before retrying.
     """
-    cid = os.environ.get('GOOGLE_ADS_CUSTOMER_ID') if customer_id is None else customer_id
+    cid = _change_default() if customer_id is None else customer_id
     return rails.apply_recommendation_draft(cid, recommendation_id)
 
 
@@ -633,7 +723,7 @@ def dismiss_recommendation(recommendation_id: str, customer_id: str | None = Non
     Does not apply its proposal, disable future suggestions or auto-apply subscriptions.
     No validation-only support, automatic rollback or retry; live visibility is unverified.
     """
-    cid = os.environ.get('GOOGLE_ADS_CUSTOMER_ID') if customer_id is None else customer_id
+    cid = _change_default() if customer_id is None else customer_id
     return rails.dismiss_recommendation_draft(rails.DismissRecommendationIntent(cid, recommendation_id))
 
 
@@ -650,10 +740,7 @@ def discover_keywords(
     Resume only with the returned token and identical seeds, account and settings.
     No URL seed, keyword addition or confirmation. See docs/keyword-discovery.md.
     """
-    cid = os.environ.get("GOOGLE_ADS_CUSTOMER_ID") if customer_id is None else customer_id
-    if type(cid) is not str or not re.fullmatch(r"[1-9][0-9]*", cid):
-        raise rails.RailViolation("customer_id must be a canonical positive ASCII ID", code="BAD_ID")
-    rails.check_customer_allowlisted(cid, "read")
+    cid, account = _read_account(customer_id, strict=True)
     if type(seed_keywords) is not list or not 1 <= len(seed_keywords) <= 20 or any(
         type(seed) is not str or not seed or seed != seed.strip()
         or any(unicodedata.category(ch) == "Cc" for ch in seed)
@@ -661,7 +748,7 @@ def discover_keywords(
     ):
         raise rails.RailViolation("seed_keywords must be 1..20 exact nonblank strings without "
                                   "outer whitespace or control characters", code="BAD_SEEDS")
-    return client.discover_keywords(seed_keywords, cid, page_token)
+    return _labelled(client.discover_keywords(seed_keywords, cid, page_token), account)
 
 
 @mcp.tool()
@@ -679,10 +766,7 @@ def get_keyword_forecasts(
     Returns raw optional campaign metrics, not per-keyword or historical performance.
     Read-only; no saved plan, account changes or confirmation. See docs/keyword-forecasts.md.
     """
-    cid = os.environ.get("GOOGLE_ADS_CUSTOMER_ID") if customer_id is None else customer_id
-    if type(cid) is not str or not re.fullmatch(r"[1-9][0-9]*", cid):
-        raise rails.RailViolation("customer_id must be a canonical positive ASCII ID", code="BAD_ID")
-    rails.check_customer_allowlisted(cid, "read")
+    cid, account = _read_account(customer_id, strict=True)
     if (type(keyword_texts) is not list or not 1 <= len(keyword_texts) <= 20 or any(
             type(text) is not str or not text or text != text.strip() or len(text) > 80
             or len(text.split()) > 10 or any(unicodedata.category(ch) == "Cc" for ch in text)
@@ -696,9 +780,9 @@ def get_keyword_forecasts(
         if type(value) is not int or not 0 < value <= 2**63 - 1:
             raise rails.RailViolation("money requires a positive signed-int64 integer in micros",
                                       code="BAD_INPUT")
-    return client.keyword_forecasts(keyword_texts, match_type, forecast_start_date,
-                                    forecast_end_date, max_cpc_bid_micros, cid,
-                                    daily_budget_micros)
+    return _labelled(client.keyword_forecasts(
+        keyword_texts, match_type, forecast_start_date, forecast_end_date,
+        max_cpc_bid_micros, cid, daily_budget_micros), account)
 
 
 @mcp.tool()
@@ -715,7 +799,7 @@ def create_pmax_campaign(campaign_name: str, asset_group_name: str, daily_budget
     JPEG/PNG images. No feeds, portfolio bidding or uploads. Brand guidelines enabled;
     business name/logo link to campaign. Automated call to action; Google may generate
     video. Confirm the returned draft to apply atomically. See docs/m2-pmax-creation.md."""
-    cid = os.environ.get('GOOGLE_ADS_CUSTOMER_ID') if customer_id is None else customer_id
+    cid = _change_default() if customer_id is None else customer_id
     return rails.creation_draft(rails.CreatePMaxCampaignIntent(
         cid, campaign_name, asset_group_name, daily_budget, target_cpa, geo_target_ids,
         language_ids, headlines, long_headlines, descriptions, business_name, final_url,
@@ -737,7 +821,7 @@ def create_demand_gen_campaign(
     creation and cannot later be upgraded on this campaign. No groups or ads are created.
     Offline-tested only; confirmation is required and provider acceptance is unverified.
     """
-    cid = os.environ.get('GOOGLE_ADS_CUSTOMER_ID') if customer_id is None else customer_id
+    cid = _change_default() if customer_id is None else customer_id
     return rails.creation_draft(rails.CreateDemandGenCampaignIntent(
         cid, campaign_name, daily_budget, geo_target_ids, language_ids,
         contains_eu_political_advertising))

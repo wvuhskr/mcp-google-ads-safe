@@ -33,8 +33,6 @@ _LIMIT_RE = re.compile(r"\bLIMIT\b", re.IGNORECASE)
 # ponytail: fail-closed ceiling on an internal scan (10M rows at 10k/page). If a real safety
 # scan legitimately needs more, raise this AND revisit whether it should be scanning that wide.
 _SCAN_PAGE_CAP = 1000
-_ANCESTRY_DEPTH_CAP = 3
-_ANCESTRY_COUNT_CAP = 500
 # Only these keys are forwarded from the credential YAML to GoogleAdsClient.load_from_dict.
 # Anything else (notably `logging`, which reaches logging.config.dictConfig) is refused.
 _CREDENTIAL_KEYS = frozenset({
@@ -182,7 +180,7 @@ def _search_one_page(query, customer_id, raw_page_token):
 def _scan_rows(query, customer_id):
     """Page a query to COMPLETION and return raw GoogleAdsRow protos — the fail-closed
     primitive under every INTERNAL safety scan (gaql_all, effective_strategy,
-    campaign_budget, list_accounts, the ancestry walk). Refuses a LIMIT (a capped scan
+    campaign_budget, the account lookups under the login manager). Refuses a LIMIT (a capped scan
     cannot prove completeness) and reconciles the returned row count against
     total_results_count so a rail never authorizes from a partial population."""
     from .rails import RailViolation
@@ -1168,20 +1166,17 @@ def entity_status(customer_id, entity_type, entity_id) -> dict:
 
 
 def list_accounts() -> list[dict]:
-    """The READ-allowlisted accounts, each {customer_id, descriptive_name, currency_code}."""
+    """The explicitly listed accounts, each {customer_id, descriptive_name, currency_code},
+    from ONE customer_client query on the login manager (not one query per account). An id
+    the manager does not return keeps its row with empty name and currency."""
     from .rails import read_customer_ids
-    out = []
-    for cid in sorted(read_customer_ids()):
-        rows = _scan_rows(
-            "SELECT customer.id, customer.descriptive_name, customer.currency_code FROM customer",
-            cid)
-        cust = rows[0].customer if rows else None
-        out.append({
-            "customer_id": cid,
-            "descriptive_name": cust.descriptive_name if cust else None,
-            "currency_code": cust.currency_code if cust else None,
-        })
-    return out
+    ids = sorted(_digits(x) for x in read_customer_ids() if _digits(x))
+    if not ids:
+        return []
+    found = {a["customer_id"]: a for a in _client_accounts(_id_filter(ids))}
+    return [{"customer_id": cid,
+             "descriptive_name": found.get(cid, {}).get("descriptive_name"),
+             "currency_code": found.get(cid, {}).get("currency_code")} for cid in ids]
 
 
 # --- canned-GAQL report/lookup functions -------------------------------------------------
@@ -1391,66 +1386,169 @@ def entities(customer_id, entity_type, ids=None, parent_id=None, page_token=None
     return gaql(query, customer_id, page_token)
 
 
-# --- startup: prove the read allowlist descends from the login manager -----------------
+# --- accounts under the login manager ----------------------------------------------------
+# customer_client, asked of the login manager, returns the manager itself (level 0) and every
+# direct AND indirect client in one query. Live-checked 2026-11-19 on a flat manager (levels
+# 0 and 1, an id IN filter, and a non-manager login returning only itself at level 0); the
+# all-levels behavior is Google's documented contract for the resource.
 
-def _customer_client_children(manager_id):
-    """Direct children (level 1) of a manager account, as [{id, manager}]. Uses the
-    complete-scan primitive so a partial page cannot hide a child."""
-    query = (
-        "SELECT customer_client.id, customer_client.manager, customer_client.level "
-        "FROM customer_client WHERE customer_client.level = 1"
-    )
-    return [{"id": str(r.customer_client.id), "manager": bool(r.customer_client.manager)}
-            for r in _scan_rows(query, manager_id)]
+_CLIENT_FIELDS = ("id", "descriptive_name", "currency_code", "time_zone", "status",
+                  "manager", "level", "test_account", "hidden")
+_FIND_ACCOUNTS_MAX = 200
+# (login manager, customer id) -> account row, for accounts already proven readable in
+# manager read scope. ponytail: lives for the process, so an account canceled or unlinked
+# after its first read stays cached until restart (Google itself then refuses the query).
+_DESCENDANT_CACHE: dict = {}
 
 
-def verify_login_manager_ancestry():
-    """Startup ancestry check: every READ-allowlisted customer_id must be a descendant of the
-    configured login manager. Walks customer_client from the login manager, depth-capped at
-    3 and count-capped at 500. If the walk TRUNCATES (hits a cap) while a required id is
-    still unconfirmed, it fails LOUD rather than guessing; a required id that the completed
-    walk never reached raises 'login manager <id> is not an ancestor of <id>'."""
-    from .rails import RailViolation, read_customer_ids
+def login_manager_id() -> str:
+    """Digits of the credential profile's login_customer_id; refuses when there is none."""
+    from .rails import RailViolation
     login_id = _digits(getattr(gads(), "login_customer_id", "") or "")
     if not login_id:
         raise RailViolation(
             "no login_customer_id configured — cannot verify manager ancestry",
             code="NO_LOGIN_MANAGER")
-    required = {_digits(x) for x in read_customer_ids()}
-    required.discard("")
+    return login_id
 
-    seen = {login_id}
-    frontier = [(login_id, 0)]
-    count = 0
-    truncated = False
-    while frontier:
-        manager_id, depth = frontier.pop()
-        for child in _customer_client_children(manager_id):
-            count += 1
-            if count > _ANCESTRY_COUNT_CAP:
-                raise RailViolation(
-                    f"customer-client walk exceeded {_ANCESTRY_COUNT_CAP} nodes before "
-                    "completing — truncated, refusing to authorize the read allowlist",
-                    code="ANCESTRY_TRUNCATED")
-            child_id = _digits(child["id"])
-            if not child_id or child_id in seen:
-                continue
-            seen.add(child_id)
-            if child["manager"]:
-                if depth + 1 >= _ANCESTRY_DEPTH_CAP:
-                    truncated = True  # a deeper manager we will not expand
-                else:
-                    frontier.append((child_id, depth + 1))
 
-    missing = required - seen
-    if missing and truncated:
+def _id_filter(ids) -> str:
+    """WHERE clause for a set of customer ids. Digits only, so nothing else reaches GAQL."""
+    return " WHERE customer_client.id IN (" + ", ".join(sorted({_digits(i) for i in ids})) + ")"
+
+
+def _client_accounts(where="") -> list[dict]:
+    """Accounts under the login manager as plain dicts, from one complete scan."""
+    query = ("SELECT " + ", ".join(f"customer_client.{f}" for f in _CLIENT_FIELDS)
+             + " FROM customer_client" + where)
+    out = []
+    for row in _scan_rows(query, login_manager_id()):
+        cc = row.customer_client
+        out.append({
+            "customer_id": str(cc.id),
+            "descriptive_name": cc.descriptive_name or None,
+            "currency_code": cc.currency_code or None,
+            "time_zone": cc.time_zone or None,
+            "status": cc.status.name,
+            "manager": bool(cc.manager),
+            "level": int(cc.level),
+            "test_account": bool(cc.test_account),
+            "hidden": bool(cc.hidden),
+        })
+    return out
+
+
+def _format_customer_id(cid: str) -> str:
+    return f"{cid[:3]}-{cid[3:6]}-{cid[6:]}" if len(cid) == 10 else cid
+
+
+def find_accounts(name_contains=None, include_managers=False, include_hidden=False,
+                  limit=50, page_token=None) -> dict:
+    """Search the accounts under the login manager by name. ONE query, no metrics, no
+    per-account calls; the name match and paging happen locally."""
+    from .rails import RailViolation, read_customer_ids, read_scope, write_customer_ids
+    if name_contains is not None and type(name_contains) is not str:
+        raise RailViolation("name_contains must be text", code="BAD_INPUT")
+    if type(limit) is not int or not 1 <= limit <= _FIND_ACCOUNTS_MAX:
+        raise RailViolation(f"limit must be a whole number from 1 to {_FIND_ACCOUNTS_MAX}",
+                            code="BAD_INPUT")
+    if page_token is not None and (type(page_token) is not str or not page_token.isdecimal()):
+        raise RailViolation("page_token must be the next_page_token from a previous "
+                            "find_accounts answer", code="BAD_INPUT")
+    for flag in (include_managers, include_hidden):
+        if type(flag) is not bool:
+            raise RailViolation("include_managers and include_hidden must be true or false",
+                                code="BAD_INPUT")
+    scope = read_scope()
+    read_ids, write_ids = read_customer_ids(), write_customer_ids()
+    needle = (name_contains or "").strip().casefold()
+    matches = [a for a in _client_accounts()
+               if (include_managers or not a["manager"])
+               and (include_hidden or not a["hidden"])
+               and needle in (a["descriptive_name"] or "").casefold()]
+    matches.sort(key=lambda a: ((a["descriptive_name"] or "").casefold(), a["customer_id"]))
+    start = int(page_token or 0)
+    page = matches[start:start + limit]
+    for a in page:
+        cid = a["customer_id"]
+        active = a["status"] == "ENABLED" and not a["hidden"]
+        a["customer_id_formatted"] = _format_customer_id(cid)
+        a["can_read"] = active if scope == "manager" else cid in read_ids
+        a["can_write"] = cid in write_ids
+    more = start + limit < len(matches)
+    return {"accounts": page, "returned_count": len(page), "total_matching": len(matches),
+            "next_page_token": str(start + limit) if more else None,
+            "login_manager": login_manager_id(), "read_scope": scope}
+
+
+def require_readable_descendant(customer_id) -> dict:
+    """Manager read scope: prove one account is an ENABLED, non-hidden descendant of the
+    login manager with a single filtered lookup, cached for the process once proven.
+    Refusals are never cached."""
+    from .rails import RailViolation
+    cid = _digits(customer_id)
+    login_id = login_manager_id()
+    if not cid:
+        raise RailViolation(f"customer_id {customer_id!r} is not an account number",
+                            code="NOT_UNDER_MANAGER")
+    cached = _DESCENDANT_CACHE.get((login_id, cid))
+    if cached is not None:
+        return cached
+    rows = _client_accounts(f" WHERE customer_client.id = {cid}")
+    if len(rows) != 1 or rows[0]["customer_id"] != cid:
         raise RailViolation(
-            f"customer-client walk truncated at depth {_ANCESTRY_DEPTH_CAP} before confirming "
-            f"{sorted(missing)} — refusing rather than guessing", code="ANCESTRY_TRUNCATED")
+            f"account {_format_customer_id(cid)} is not under login manager "
+            f"{_format_customer_id(login_id)} — use find_accounts to see the accounts this "
+            "sign-in can reach", code="NOT_UNDER_MANAGER")
+    account = rows[0]
+    if account["status"] != "ENABLED" or account["hidden"]:
+        raise RailViolation(
+            f"account {_format_customer_id(cid)} is {account['status']}"
+            f"{' and hidden' if account['hidden'] else ''} — only enabled, visible accounts "
+            "can be read", code="ACCOUNT_NOT_ACTIVE")
+    _DESCENDANT_CACHE[(login_id, cid)] = account
+    return account
+
+
+def find_account(customer_id) -> dict | None:
+    """One account under the login manager by id, or None. Display only: no access check."""
+    rows = _client_accounts(f" WHERE customer_client.id = {int(_digits(customer_id))}")
+    if not rows:
+        return None
+    return {**rows[0], "customer_id_formatted": _format_customer_id(rows[0]["customer_id"])}
+
+
+def reachable_account_count() -> int:
+    """How many enabled, visible, non-manager accounts sit under the login manager. One
+    request; only the total is used, so a tree larger than one page still costs one call."""
+    _, _, total = _search_one_page(
+        "SELECT customer_client.id FROM customer_client WHERE customer_client.status = "
+        "'ENABLED' AND customer_client.hidden = FALSE AND customer_client.manager = FALSE",
+        login_manager_id(), None)
+    return int(total)
+
+
+def verify_login_manager_ancestry() -> list[dict]:
+    """Startup check: every explicitly listed account (the write list always; the read list
+    too in list scope) must sit under the configured login manager. ONE customer_client
+    query filtered to those ids, whatever the size or depth of the tree. Fails closed: an id
+    Google does not return is refused by name. Returns the listed accounts it confirmed."""
+    from .rails import RailViolation, read_customer_ids, write_customer_ids
+    login_id = login_manager_id()
+    required = {_digits(x) for x in read_customer_ids() | write_customer_ids()}
+    required.discard("")
+    # The manager itself (level 0) is always asked for: it proves the sign-in works even
+    # when nothing is listed (read-only manager scope).
+    found = _client_accounts(_id_filter(required | {login_id}))
+    seen = {a["customer_id"] for a in found}
+    missing = sorted((required | {login_id}) - seen)
     if missing:
         raise RailViolation(
-            f"login manager {login_id} is not an ancestor of {sorted(missing)[0]}",
-            code="ANCESTRY_NOT_DESCENDANT")
+            f"login manager {login_id} is not an ancestor of {missing[0]} — every listed "
+            "account must be under the sign-in's manager account; fix the list or the "
+            "login_customer_id and restart", code="ANCESTRY_NOT_DESCENDANT")
+    return sorted((a for a in found if a["customer_id"] in required),
+                  key=lambda a: a["customer_id"])
 
 
 def preflight():

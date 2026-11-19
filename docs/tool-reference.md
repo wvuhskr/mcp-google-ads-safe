@@ -1,7 +1,7 @@
 # mcp-google-ads-safe
 
 An unofficial Model Context Protocol (MCP) server, a standard way for an assistant to call
-tools, for Google Ads API v25. The current source contains 60 tools: `undo_change` (below), the 25 Milestone 1 tools for account and
+tools, for Google Ads API v25. The current source contains 63 tools: the account tools `find_accounts`, `use_account` and `current_account` (see [Agency use](configuration.md#agency-use-many-client-accounts)), `undo_change` (below), the 25 Milestone 1 tools for account and
 performance reads, campaign and ad-group updates, status changes, keyword and negative
 keyword work, location exclusions, and campaign schedules, plus four Milestone 2 reads:
 `list_extensions`, `get_policy_issues`, `get_conversion_actions`, and `list_recommendations`.

@@ -10,9 +10,23 @@ The recommended credential YAML is a plain-text settings file with `json_key_fil
 | --- | --- | --- |
 | `GOOGLE_ADS_YAML` | none, required | Absolute path to the private Google Ads YAML credential profile. Other environment variables do not replace it. |
 | `GOOGLE_ADS_CUSTOMER_ID` | none | Default advertising customer and fallback for either allowlist when it is unset or blank. |
-| `GOOGLE_ADS_READ_CUSTOMER_IDS` | default customer only | Comma-separated customers allowed for reads. Every entry must descend from the profile's `login_customer_id`. |
-| `GOOGLE_ADS_WRITE_CUSTOMER_IDS` | default customer only | Comma-separated customers allowed for writes. This must be a subset of the read allowlist. |
+| `GOOGLE_ADS_READ_SCOPE` | `list` | How far reads reach. `list`: only the accounts in the read list. `manager`: any enabled, visible account under the profile's `login_customer_id`, with no list to maintain. Any other value stops startup. Writes are list-only in both. See [Agency use](#agency-use-many-client-accounts). |
+| `GOOGLE_ADS_READ_CUSTOMER_IDS` | default customer only | Comma-separated customers allowed for reads in `list` scope. Every entry must descend from the profile's `login_customer_id`. |
+| `GOOGLE_ADS_WRITE_CUSTOMER_IDS` | default customer only | Comma-separated customers allowed for writes, in every scope. In `list` scope this must be a subset of the read allowlist; in `manager` scope every entry must be an enabled, visible account under the login manager. |
 | `GOOGLE_ADS_MAX_PAGES` | `1` | Maximum pages for user queries. Must be an integer of at least 1. Internal safety scans still run to completion. |
+
+## Agency use: many client accounts
+
+Set `GOOGLE_ADS_READ_SCOPE=manager` when one sign-in manages many client accounts. Then:
+
+- `find_accounts("smith dental")` searches every account under the manager by name, in one request, however large or deep the manager account is.
+- Reports work on any enabled, visible account under the manager. The first report on an account costs one extra lookup to prove it belongs to the manager; the proof is remembered until the server restarts. An account canceled or unlinked after that stays remembered until restart, though Google itself then refuses the report.
+- Changes are still limited to `GOOGLE_ADS_WRITE_CUSTOMER_IDS` (or the single `GOOGLE_ADS_CUSTOMER_ID`). Manager scope never widens what can be changed.
+- `use_account("123-456-7890")` picks the account that reports use when none is named, and `current_account` shows the pick. The pick is for reports only. A change must name its `customer_id` every time, and is refused with `ACCOUNT_REQUIRED` if it does not while a pick is active. The pick is held by the server process, and a desktop client can share one process across several chats, so a pick made in one chat is visible in the others. Every report answer carries an `account` block saying which account it came from and whether that was the named `customer_id`, the `use_account` pick or the configured default.
+
+In `list` scope `find_accounts` still shows every account the sign-in can reach, with `can_read` and `can_write` marking the listed ones; names and numbers of unlisted accounts are visible, their data is not.
+
+Startup and `health_check` prove the listed accounts with one request to Google in either scope. Earlier versions walked the manager tree level by level and refused managers deeper than three levels or larger than 500 accounts (`ANCESTRY_TRUNCATED`); that limit is gone.
 
 ## Write controls
 

@@ -48,8 +48,10 @@ def _deny_real_provider(monkeypatch, tmp_path):
     monkeypatch.setattr(client.GoogleAdsClient, 'load_from_storage', staticmethod(refuse))
     monkeypatch.setenv('GOOGLE_ADS_YAML', str(tmp_path / 'no-credentials.yaml'))
     client._CLIENT_CACHE.clear()
+    client._DESCENDANT_CACHE.clear()
     yield
     client._CLIENT_CACHE.clear()
+    client._DESCENDANT_CACHE.clear()
 
 
 
@@ -62,7 +64,7 @@ def _google_env(monkeypatch):
         "GOOGLE_ADS_AUDIT_PATH", "GOOGLE_ADS_ADVERTISER_CONFIG",
         "GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET",
         "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_LOGIN_CUSTOMER_ID",
-        "GOOGLE_ADS_READ_CUSTOMER_IDS", "GOOGLE_ADS_WRITE_CUSTOMER_IDS",
+        "GOOGLE_ADS_READ_CUSTOMER_IDS", "GOOGLE_ADS_WRITE_CUSTOMER_IDS", "GOOGLE_ADS_READ_SCOPE",
         "GOOGLE_ADS_MAX_DAILY_BUDGET", "GOOGLE_ADS_MAX_CPC", "GOOGLE_ADS_MAX_TARGET_CPA",
         "GOOGLE_ADS_DRAFT_TTL_SECONDS", "GOOGLE_ADS_ALLOW_REMOVE_ENTITY",
         "GOOGLE_ADS_ALLOW_SHARED_BUDGET_EDIT", "GOOGLE_ADS_ALLOW_PORTFOLIO_EDIT",
