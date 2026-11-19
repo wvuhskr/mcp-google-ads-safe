@@ -52,7 +52,7 @@ You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) (a small tool th
 1. In your terminal (on a Mac, the Terminal app), run the guided setup. It asks three plain questions, opens Google's sign-in page, and saves a private sign-in file:
 
    ```sh
-   uvx --from git+https://github.com/wvuhskr/mcp-google-ads-safe mcp-google-ads-safe setup
+   uvx mcp-google-ads-safe setup
    ```
 
 2. Paste the configuration it prints into your assistant (Claude Desktop or Claude Code; other MCP clients take the same values).
@@ -60,7 +60,7 @@ You need Python 3.12 or newer, [uv](https://docs.astral.sh/uv/) (a small tool th
 4. Ask it: "run health_check, then find_accounts".
 5. Ask it: "use the account named ..." and start asking questions.
 
-That setup is read-only and can report on every enabled account under your manager account. Nothing can be changed until you turn changes on. The package is not on PyPI yet, so the command above installs from GitHub. A service account, or a manual setup with explicit account lists, is in the [setup guide](docs/setup.md). To sign in again later: the same command with `reauth` in place of `setup`.
+That setup is read-only and can report on every enabled account under your manager account. Nothing can be changed until you turn changes on. The command installs the package from [PyPI](https://pypi.org/project/mcp-google-ads-safe/). The configuration that setup prints launches the same version from GitHub; both work. A service account, or a manual setup with explicit account lists, is in the [setup guide](docs/setup.md). To sign in again later: the same command with `reauth` in place of `setup`.
 
 ### Turning on changes
 
@@ -145,7 +145,7 @@ Live evidence is uneven and documented per tool. All reporting and lookup tools 
 
 ## Status
 
-Version 2.0.0. Installs from GitHub with one command; a PyPI package is prepared but not published yet. CI runs lint, the full test suite on the newest and the oldest supported MCP library, a known-vulnerability audit of dependencies, and a high-severity Bandit scan, on Ubuntu and macOS across Python 3.12, 3.13, and 3.14. Windows has not been tested.
+Version 2.0.0. Published on [PyPI](https://pypi.org/project/mcp-google-ads-safe/); runs with one command. CI runs lint, the full test suite on the newest and the oldest supported MCP library, a known-vulnerability audit of dependencies, and a high-severity Bandit scan, on Ubuntu and macOS across Python 3.12, 3.13, and 3.14. Windows has not been tested.
 
 Upgrading from 1.x: report answers changed shape (readable rows plus `account` and `provenance` blocks; `run_gaql(raw=True)` returns the old rows), and `health_check` returns different keys. See the [changelog](CHANGELOG.md).
 
