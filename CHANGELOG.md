@@ -1,5 +1,26 @@
 # Changelog
 
+## 2.0.0 - unreleased
+
+Agency use (work in progress toward 2.0.0):
+
+- New tool `find_accounts`: search the accounts under the login manager by name. One
+  request, no metrics, every level of the manager account.
+- New tools `use_account` and `current_account`: pick the account reports use when none is
+  named. Reports only. A change must name its `customer_id` every time and is refused
+  (`ACCOUNT_REQUIRED`) if it does not while a pick is active.
+- New opt-in `GOOGLE_ADS_READ_SCOPE=manager`: reports on any enabled, visible account under
+  the login manager without listing it. Changes stay limited to
+  `GOOGLE_ADS_WRITE_CUSTOMER_IDS` in every scope.
+- Startup and `health_check` prove the listed accounts with one request instead of walking
+  the manager tree. The depth-3 / 500-account limit and `ANCESTRY_TRUNCATED` are gone.
+  `list_accounts` is one request instead of one per account.
+- Breaking: `health_check` now returns `login_manager`, `read_scope` and
+  `reachable_accounts`; in manager scope it returns a count instead of an `accounts` list.
+- Breaking: every report answer carries an `account` block (`customer_id`, `selected_by`).
+- `health_check` `reachable_accounts` counts enabled, visible client accounts (managers excluded).
+- Tool count 63.
+
 ## 1.1.0 - 2026-09-14
 
 - New tool `undo_change(draft_id)`: drafts the reverse of an applied change from the audit

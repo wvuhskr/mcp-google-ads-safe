@@ -2,7 +2,7 @@
 
 A Google Ads MCP server that lets an AI assistant change your account, with the brakes built into the server instead of the prompt.
 
-MCP (Model Context Protocol) is the standard that lets assistants like Claude, Codex, or Cursor call tools. Most Google Ads MCP servers are either read-only (Google's own is, on purpose) or hand the assistant raw write access and hope for the best. This one sits in the middle: 60 tools that cover research, reporting, and account changes across Search, Performance Max, and Demand Gen, where every change has to pass a set of checks the assistant cannot talk its way around.
+MCP (Model Context Protocol) is the standard that lets assistants like Claude, Codex, or Cursor call tools. Most Google Ads MCP servers are either read-only (Google's own is, on purpose) or hand the assistant raw write access and hope for the best. This one sits in the middle: 63 tools that cover research, reporting, and account changes across Search, Performance Max, and Demand Gen, where every change has to pass a set of checks the assistant cannot talk its way around.
 
 Independent, third-party project. Not affiliated with, endorsed by, or maintained by Google. Uses Google Ads API v25. MIT licensed.
 
@@ -18,7 +18,7 @@ So the design goal here is simple: the assistant proposes, the server decides wh
 | --- | --- | --- | --- |
 | Reads (GAQL, reports, account discovery) | Yes | Yes | Yes |
 | Writes | No, by design | Yes | Yes, off by default |
-| Per-account write allowlist | n/a | Rare | Yes, must be a subset of the read allowlist |
+| Per-account write allowlist | n/a | Rare | Yes. Reads can optionally cover a whole manager account; changes never do |
 | Preview then separate confirm call | n/a | Some | Yes, every write |
 | Daily budget, CPC, and target CPA ceilings | n/a | Some | Yes, three separate caps |
 | Refuses to clear a Performance Max target (budget still caps spend; this protects cost per result) | n/a | Not found | Yes |

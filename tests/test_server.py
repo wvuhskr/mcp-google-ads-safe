@@ -48,7 +48,8 @@ def test_run_gaql_refuses_non_allowlisted_customer(monkeypatch, fake_client):
 
 def test_run_gaql_returns_fake_envelope_for_allowlisted_customer(fake_client):
     result = tools.run_gaql("SELECT campaign.id FROM campaign", customer_id=TEST_CUSTOMER_ID)
-    assert result == {"results": [], "next_page_token": None}
+    assert result == {"results": [], "next_page_token": None, "account": {
+        "customer_id": TEST_CUSTOMER_ID, "selected_by": "customer_id"}}
 
 
 # --- 6: run_gaql with no customer_id anywhere -----------------------------------------------

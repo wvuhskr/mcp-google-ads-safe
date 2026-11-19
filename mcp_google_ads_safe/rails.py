@@ -176,28 +176,61 @@ def _allowlist(mode: str) -> set[str]:
     return ids
 
 
+def read_scope() -> str:
+    """How far reads reach. 'list' (default): only the listed accounts. 'manager'
+    (GOOGLE_ADS_READ_SCOPE=manager): any enabled, visible account under the login manager.
+    Any other value is refused rather than guessed. Writes are list-only in both."""
+    raw = (os.environ.get("GOOGLE_ADS_READ_SCOPE") or "list").strip().lower()
+    if raw not in ("list", "manager"):
+        raise RailViolation(
+            f"GOOGLE_ADS_READ_SCOPE must be 'list' or 'manager', not {raw!r}",
+            code="BAD_READ_SCOPE")
+    return raw
+
+
+def write_customer_ids() -> set[str]:
+    """The WRITE allowlist as normalized ids."""
+    return _allowlist("write")
+
+
 def read_customer_ids() -> set[str]:
-    """The READ allowlist as normalized ids. client.preflight() reads this to prove every
-    read-authorized account descends from the configured login manager (function-local
-    import there — client never imports rails at load time)."""
-    return _allowlist("read")
+    """The explicitly listed READ accounts as normalized ids. client.preflight() reads this
+    to prove every listed account descends from the configured login manager (function-local
+    import there — client never imports rails at load time). In manager scope reads are not
+    limited to this set; it is then the read list plus the write list, the accounts named in
+    configuration."""
+    ids = _allowlist("read")
+    return ids | _allowlist("write") if read_scope() == "manager" else ids
 
 
 def check_customer_allowlisted(customer_id, mode: str) -> None:
-    """Refuse a customer id not on the mode's ("read"|"write") allowlist.
+    """Refuse a customer id the mode ("read"|"write") may not touch.
 
-    Unset lists => the single default account GOOGLE_ADS_CUSTOMER_ID only. WRITE must be a
-    SUBSET of READ -- a write id that is not also a read id is a configuration error (you
-    cannot write an account you cannot read), which fails closed here."""
+    List scope: unset lists => the single default account GOOGLE_ADS_CUSTOMER_ID only. WRITE
+    must be a SUBSET of READ -- a write id that is not also a read id is a configuration
+    error (you cannot write an account you cannot read), which fails closed here.
+
+    Manager scope: a read needs the account to be an enabled, visible descendant of the
+    login manager (one cached lookup). A write needs the write list exactly as in list
+    scope AND the same descendant proof; manager scope never widens writes."""
+    scope = read_scope()
     read = _allowlist("read")
     write = _allowlist("write")
+    cid = _normalize_customer_id(customer_id)
+    if scope == "manager":
+        if mode == "write" and cid not in write:
+            raise RailViolation(
+                f"customer_id {customer_id!r} is not allowlisted for write — changes are "
+                "limited to GOOGLE_ADS_WRITE_CUSTOMER_IDS (or GOOGLE_ADS_CUSTOMER_ID) even "
+                "when reads cover the whole manager account", code="NOT_ALLOWLISTED")
+        client.require_readable_descendant(cid, fresh=(mode == "write"))
+        return
     if not write.issubset(read):
         stray = sorted(write - read)
         raise RailViolation(
             f"config error: GOOGLE_ADS_WRITE_CUSTOMER_IDS {stray} not in the read allowlist "
             "— a write id must also be a read id", code="NOT_ALLOWLISTED")
     allow = write if mode == "write" else read
-    cid = _normalize_customer_id(customer_id)
     if cid not in allow:
         raise RailViolation(
             f"customer_id {customer_id!r} is not allowlisted for {mode} "

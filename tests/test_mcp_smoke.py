@@ -26,7 +26,7 @@ EXPECTED_TOOLS = {
     "get_negative_keywords",
     "search_geo_targets",
     "get_entities",
-    "list_accounts",
+    "list_accounts", "find_accounts", "use_account", "current_account",
     "draft_keywords",
     "remove_keywords",
     "update_keyword_bid",
@@ -41,7 +41,7 @@ EXPECTED_TOOLS = {
 def test_all_59_tools_publish_serializable_input_schemas():
     async def check():
         inventory = await mcp.list_tools()
-        assert len(inventory) == 60
+        assert len(inventory) == 63
         assert {tool.name for tool in inventory} == EXPECTED_TOOLS
         for tool in inventory:
             json.dumps(tool.input_schema)
