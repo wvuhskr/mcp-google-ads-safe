@@ -47,6 +47,36 @@ The credential YAML may contain only the keys the Google Ads client library need
 
 Audit log phases: `draft`, `refused`, `apply`, `apply_unverified` (the change landed but the read-back did not match), `error` (failed before dispatch, nothing landed), and `unknown` (failed at the wire, the change may have landed).
 
+## Per-account rules for agencies
+
+`advertiser.yaml` may carry an `accounts:` map keyed by customer id (dashes are fine).
+Each entry can set `advertiser_domain`, `blocked_terms`, `keyword_research`,
+`max_daily_budget`, `max_cpc` and `max_target_cpa` for that one account:
+
+- `advertiser_domain` replaces the top-level value for that account. `keyword_research`
+  keys an account sets replace the top-level ones; keys it leaves out keep the top-level
+  values.
+- `blocked_terms` are added to the top-level list. A house-wide ban cannot be lifted per
+  account.
+- The caps replace `GOOGLE_ADS_MAX_DAILY_BUDGET`, `GOOGLE_ADS_MAX_CPC` and
+  `GOOGLE_ADS_MAX_TARGET_CPA` for that account, in that account's own currency. Without
+  them one environment number means 1,000 dollars in one account and 1,000 yen in another.
+  They are not limited by the environment numbers and can be higher, so check them as
+  carefully as the environment caps; startup prints each account that has its own caps.
+  An account that sets any cap must set `max_daily_budget` and `max_cpc` together, so no
+  cap is ever quietly taken from a number written for another currency. `max_target_cpa`
+  is optional and falls back to that account's `max_cpc`.
+- An account not listed uses the top-level values and the environment caps.
+
+A commented example is in [advertiser.example.yaml](../advertiser.example.yaml). Unknown
+keys, a bad account number, an account listed twice or a non-positive cap stop startup and
+name the problem.
+
+Every draft shows, beside its preview, the account it changes and the caps that apply
+(`account`, `caps`, with `caps.source` saying whether they came from the `accounts:`
+section or the environment). The account's name and currency appear when an earlier report
+or pick already learned them; drafting a change makes no extra request to fill them in.
+
 ## Advertiser settings
 
 `GOOGLE_ADS_ADVERTISER_CONFIG` selects an optional advertiser YAML file. Its default is `~/.mcp-google-ads-safe/advertiser.yaml`. A missing or empty file uses empty defaults. Unknown keys or invalid values stop startup with an error naming the file and field.

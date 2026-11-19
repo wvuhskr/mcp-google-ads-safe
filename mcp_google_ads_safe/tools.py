@@ -22,7 +22,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from . import client, rails
+from . import client, rails, settings
 from .app import mcp
 
 # The account picked with use_account. Reports only: no change ever resolves through it.
@@ -50,10 +50,21 @@ def _pick_or_default():
     return os.environ.get("GOOGLE_ADS_CUSTOMER_ID"), "GOOGLE_ADS_CUSTOMER_ID"
 
 
+def _change_account(customer_id):
+    """The account a CHANGE targets: the named customer_id, else the configured default
+    (refused under a pick). Also says which account's house rules and caps apply."""
+    cid = _change_default() if customer_id is None else customer_id
+    if cid is None:
+        raise rails.RailViolation("no customer_id given and GOOGLE_ADS_CUSTOMER_ID is unset")
+    settings.set_account(cid)
+    return cid
+
+
 def _resolve_customer_id(customer_id):
     cid = customer_id or _change_default()
     if not cid:
         raise rails.RailViolation("no customer_id given and GOOGLE_ADS_CUSTOMER_ID is unset")
+    settings.set_account(cid)
     return cid
 
 
@@ -75,6 +86,7 @@ def _read_account(customer_id, strict=False):
             "no customer_id given, no account picked with use_account, and "
             "GOOGLE_ADS_CUSTOMER_ID is unset")
     rails.check_customer_allowlisted(cid, "read")
+    settings.set_account(cid)
     return cid, {"customer_id": rails._normalize_customer_id(cid), "selected_by": source}
 
 
@@ -153,12 +165,70 @@ def current_account() -> dict:
 
 
 @mcp.tool()
-def run_gaql(query: str, customer_id: str | None = None, page_token: str | None = None) -> dict:
-    """Run a GAQL read query against one customer account. Refuses before any API call if
-    the customer_id is not on the READ allowlist (GOOGLE_ADS_READ_CUSTOMER_IDS /
-    GOOGLE_ADS_CUSTOMER_ID)."""
+def run_gaql(query: str, customer_id: str | None = None, page_token: str | None = None,
+             raw: bool = False) -> dict:
+    """Run one read-only GAQL query on one account. Use describe-style field names
+    (campaign.name, metrics.clicks, segments.date). Rows come back readable: status and
+    type NAMES, only the fields selected, counts as numbers, and money both in Google's
+    micros and in whole currency units (cost, *_amount). A provenance block names the
+    account, its currency and time zone, the query, and how many rows came back out of how
+    many. One page of up to 10,000 rows per call: add a LIMIT, and pass next_page_token
+    back as page_token for more. raw=True returns Google's untouched rows (integer enums,
+    micros as text) for scripts. Refused before any request if the account is not readable.
+
+    describe_fields lists what each resource can select. Recipes, each run read-only
+    against a live account on 2026-11-19 (swap the period: LAST_7_DAYS, LAST_14_DAYS,
+    LAST_30_DAYS, THIS_MONTH, LAST_MONTH, or BETWEEN '2026-01-01' AND '2026-01-31'):
+
+    By campaign:
+      SELECT campaign.name, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS AND
+      campaign.status != 'REMOVED' ORDER BY metrics.cost_micros DESC LIMIT 50
+    By day (whole account):
+      SELECT segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM customer WHERE segments.date DURING LAST_14_DAYS
+      ORDER BY segments.date
+    By device:
+      SELECT segments.device, metrics.impressions, metrics.clicks, metrics.cost_micros,
+      metrics.conversions FROM campaign WHERE segments.date DURING LAST_30_DAYS
+    By hour of day:
+      SELECT segments.hour, metrics.clicks, metrics.cost_micros, metrics.conversions
+      FROM campaign WHERE segments.date DURING LAST_30_DAYS
+    Search impression share and what was lost to budget or rank:
+      SELECT campaign.name, metrics.search_impression_share,
+      metrics.search_budget_lost_impression_share,
+      metrics.search_rank_lost_impression_share FROM campaign WHERE segments.date DURING
+      LAST_30_DAYS AND campaign.advertising_channel_type = 'SEARCH' AND
+      campaign.status = 'ENABLED'
+    Conversions by conversion action:
+      SELECT segments.conversion_action_name, metrics.conversions,
+      metrics.conversions_value FROM customer WHERE segments.date DURING LAST_30_DAYS
+    Conversion value and return on ad spend (divide conversions_value by cost):
+      SELECT campaign.name, metrics.cost_micros, metrics.conversions,
+      metrics.conversions_value FROM campaign WHERE segments.date DURING LAST_30_DAYS AND
+      metrics.cost_micros > 0 ORDER BY metrics.cost_micros DESC LIMIT 50
+    Conversions dated by when the conversion happened:
+      SELECT segments.date, metrics.conversions_by_conversion_date,
+      metrics.conversions_value_by_conversion_date FROM customer WHERE segments.date
+      DURING LAST_14_DAYS ORDER BY segments.date
+    """
     cid, account = _read_account(customer_id)
-    return _labelled(client.gaql(query, cid, page_token), account)
+    if raw:
+        return _labelled(client.gaql(query, cid, page_token), account)
+    return _labelled(client.readable_report(query, cid, page_token), account)
+
+
+@mcp.tool()
+def describe_fields(resource: str | None = None, category: str | None = None,
+                    name_contains: str | None = None) -> dict:
+    """Look up what a run_gaql query can ask for, so nobody has to know Google's field names.
+    With no resource: the common things to report on (campaign, ad_group, keyword_view,
+    search_term_view ...) in plain words. With a resource: every field a query FROM it can
+    select, with its type and whether it can be filtered or sorted, plus how many metrics
+    and segments it takes. category='metrics' or 'segments' lists those; name_contains
+    narrows any list (for example describe_fields('campaign', 'metrics', 'cost')). Reads
+    Google's field catalog only: no account data, no account needed."""
+    return client.describe_fields(resource, category, name_contains)
 
 
 @mcp.tool()
@@ -217,7 +287,7 @@ def remove_entity(entity_type: str, entity_id: str, customer_id: str | None = No
     campaign and ad_group it is forbidden. Confirmation is required. Affected descendants
     stop being usable through a removed parent. Existing budgets, bare assets, and history
     are retained. Removal cannot be undone in place."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.remove_entity_draft(
         rails.RemoveEntityIntent(cid, entity_type, entity_id, ad_group_id))
 
@@ -254,7 +324,7 @@ def create_portfolio_bidding_strategy(
     This creates inventory only; it does not attach campaigns or begin serving.
     Offline-tested only; concurrent same-name creation can still race the final check.
     """
-    cid = _change_default() if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.portfolio_creation_draft(
         rails.CreatePortfolioBiddingStrategyIntent(cid, name, strategy_type, target_cpa, target_roas))
 
@@ -271,52 +341,67 @@ def get_account_info(customer_id: str | None = None) -> dict:
 
 @mcp.tool()
 def get_campaign_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                             date_range_end: str | None = None,
-                             page_token: str | None = None) -> dict:
-    """Campaign performance report (impressions/clicks/cost/conversions), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
+                             date_range_end: str | None = None, page_token: str | None = None,
+                             limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per campaign: impressions, clicks, cost, conversions, conversion value, CTR and
+    average CPC, highest spend first. Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.campaign_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.campaign_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_ad_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                       date_range_end: str | None = None,
-                       page_token: str | None = None) -> dict:
-    """Ad-level performance report (responsive search ad text + metrics), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
+                       date_range_end: str | None = None, page_token: str | None = None,
+                       limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per ad: responsive search ad text, final URLs, status and metrics, highest spend
+    first. Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.ad_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.ad_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_keyword_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                            date_range_end: str | None = None,
-                            page_token: str | None = None) -> dict:
-    """Keyword-level performance report (quality score + metrics), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
+                            date_range_end: str | None = None, page_token: str | None = None,
+                            limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per keyword: text, match type, quality score and metrics, highest spend first.
+    Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.keyword_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.keyword_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_search_terms(customer_id: str | None = None, date_range_start: str | None = None,
-                     date_range_end: str | None = None,
-                     page_token: str | None = None) -> dict:
-    """Search-terms report, ordered by clicks descending, capped at 200 rows. Defaults to
-    the last 30 days when no explicit date range is given."""
+                     date_range_end: str | None = None, page_token: str | None = None,
+                     limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per search term people typed, with its campaign, ad group and metrics, most
+    clicks first. Last 30 days (not including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.search_terms(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.search_terms(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
 def get_geo_performance(customer_id: str | None = None, date_range_start: str | None = None,
-                        date_range_end: str | None = None,
-                        page_token: str | None = None) -> dict:
-    """Geographic performance report, ordered by spend descending. Defaults to the last 30
-    days when no explicit date range is given."""
+                        date_range_end: str | None = None, page_token: str | None = None,
+                        limit: int = client.REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per campaign and location with metrics, highest spend first. Last 30 days (not
+    including today) unless dates are given.
+    Dates are YYYY-MM-DD. limit is 1 to 1,000 rows (default 100); the provenance block says
+    which account, the exact dates, and whether more rows exist than were returned."""
     cid, account = _read_account(customer_id)
-    return _labelled(client.geo_performance(cid, date_range_start, date_range_end, page_token), account)
+    return _labelled(client.geo_performance(cid, date_range_start, date_range_end, page_token, limit),
+                     account)
 
 
 @mcp.tool()
@@ -616,7 +701,7 @@ def remove_extension(asset_id: str, extension_type: str, campaign_id: str | None
     and every other connection; higher-level associations may still serve. list_extensions
     supplies campaign asset IDs, target, and type. For ad-group IDs, use read-only run_gaql
     as documented in docs/m2-remove-extension.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.remove_extension_draft(rails.RemoveExtensionIntent(
         cid, asset_id, extension_type, campaign_id, ad_group_id))
 
@@ -631,7 +716,7 @@ def upload_image_asset(image_base64: str, name: str, customer_id: str | None = N
     through the API. Google may deduplicate content and ignore name. Readback proves only
     identity and metadata, not bytes, newness, policy or serving. Role-specific dimensions
     and aspect ratios are deferred to linking. No new link is created."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.upload_image_draft(rails.UploadImageAssetIntent(cid, image_base64, name))
 
 
@@ -646,7 +731,7 @@ def upload_text_asset(text: str, name: str, customer_id: str | None = None) -> d
     No new serving association. Bare assets have no paused status and cannot be deleted
     through the API; inventory residue persists. Google may return matching existing content
     and ignore name. Readback checks identity and exact text, not newness, policy or serving."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.upload_text_draft(rails.UploadTextAssetIntent(cid, text, name))
 
 
@@ -661,7 +746,7 @@ def create_custom_audience(name: str, url_contains: list[str], customer_id: str 
     existing tags. No prepopulation request or campaign/ad-group attachment; not automatically
     targeted. No membership count, tag, consent or serving proof. Discover IDs with run_gaql
     as documented in docs/m2-custom-audience.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.custom_audience_draft(rails.CreateCustomAudienceIntent(cid, name, url_contains))
 
 
@@ -678,7 +763,7 @@ def add_audience_targeting(campaign_id: str, audience_id: str, targeting_mode: s
     required. Refuses any existing positive or negative selection of this list.
     No mode edits, activation, list changes, bids, tags or audience readiness proof.
     Connections shown cover the selected account only. See docs/m2-audience-targeting.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.audience_targeting_draft(
         rails.AddAudienceTargetingIntent(cid, campaign_id, audience_id, targeting_mode))
 
@@ -695,7 +780,7 @@ def create_conversion_action(name: str, category: str, customer_id: str | None =
     Custom-goal membership can override secondary status for bidding. No tag installation,
     uploads, goal edits or primary-status changes. Value/attribution settings provider-managed.
     See docs/m2-conversion-creation.md for scope and offline verification limits."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.conversion_action_draft(rails.CreateConversionActionIntent(cid, name, category))
 
 
@@ -708,7 +793,7 @@ def set_conversion_action_primary_status(conversion_action_id: str, primary_for_
     Previews unchanged ordinary goals and all custom membership/campaign usage.
     Custom goals can still bid on secondary actions. No other action or goal fields change.
     Offline-tested only; see docs/m2-conversion-primary-status.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.conversion_primary_status_draft(
         rails.SetConversionActionPrimaryStatusIntent(cid, conversion_action_id, primary_for_goal))
 
@@ -719,7 +804,7 @@ def apply_recommendation(recommendation_id: str, customer_id: str | None = None)
     Default-off gate and confirmation required. No validation-only or automated rollback.
     Unknown outcomes require reading account state before retrying.
     """
-    cid = _change_default() if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.apply_recommendation_draft(cid, recommendation_id)
 
 
@@ -729,7 +814,7 @@ def dismiss_recommendation(recommendation_id: str, customer_id: str | None = Non
     Does not apply its proposal, disable future suggestions or auto-apply subscriptions.
     No validation-only support, automatic rollback or retry; live visibility is unverified.
     """
-    cid = _change_default() if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.dismiss_recommendation_draft(rails.DismissRecommendationIntent(cid, recommendation_id))
 
 
@@ -805,7 +890,7 @@ def create_pmax_campaign(campaign_name: str, asset_group_name: str, daily_budget
     JPEG/PNG images. No feeds, portfolio bidding or uploads. Brand guidelines enabled;
     business name/logo link to campaign. Automated call to action; Google may generate
     video. Confirm the returned draft to apply atomically. See docs/m2-pmax-creation.md."""
-    cid = _change_default() if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.creation_draft(rails.CreatePMaxCampaignIntent(
         cid, campaign_name, asset_group_name, daily_budget, target_cpa, geo_target_ids,
         language_ids, headlines, long_headlines, descriptions, business_name, final_url,
@@ -827,7 +912,7 @@ def create_demand_gen_campaign(
     creation and cannot later be upgraded on this campaign. No groups or ads are created.
     Offline-tested only; confirmation is required and provider acceptance is unverified.
     """
-    cid = _change_default() if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.creation_draft(rails.CreateDemandGenCampaignIntent(
         cid, campaign_name, daily_budget, geo_target_ids, language_ids,
         contains_eu_political_advertising))
@@ -844,7 +929,7 @@ def create_asset_group(campaign_id: str, asset_group_name: str, headlines: list[
     automation settings without changing them. Confirmation sends one atomic request; no
     campaign, budget, brand, feed, signal or listing-group write is included. Provider
     acceptance, policy approval and serving are not proved offline."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.creation_draft(rails.CreateAssetGroupIntent(
         cid, campaign_id, asset_group_name, headlines, long_headlines, descriptions,
         final_url, landscape_image_asset_id, square_image_asset_id))
@@ -859,7 +944,7 @@ def update_asset_group(asset_group_id: str, *, name: str | None = None,
     must change. Confirmation sends one atomic update without changing status, parent,
     branding, assets, bidding, targeting or automation. Provider acceptance and serving
     are not proved offline. See docs/m3-asset-group-update.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.asset_group_update_draft(
         rails.UpdateAssetGroupIntent(cid, asset_group_id, name, final_url))
 
@@ -875,7 +960,7 @@ def add_asset_group_assets(asset_group_id: str, assets: list[dict],
     uploads, content creation, status changes, branding, campaign or group edits.
     Provider acceptance, policy approval and serving are not proved offline.
     See docs/m3-asset-group-add-assets.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.asset_group_asset_add_draft(
         rails.AddAssetGroupAssetsIntent(cid, asset_group_id, assets))
 
@@ -889,7 +974,7 @@ def remove_asset_group_asset(asset_group_id: str, asset_id: str, field_type: str
     Confirmation sends one atomic connection removal. The bare asset and every other
     connection remain unchanged. Evidence is offline only; policy and serving are not proved.
     See docs/m3-asset-group-remove-asset.md."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.asset_group_asset_remove_draft(
         rails.RemoveAssetGroupAssetIntent(cid, asset_group_id, asset_id, field_type))
 
@@ -904,7 +989,7 @@ def set_listing_group_filter(asset_group_id: str, product_item_ids: list[str],
     Merchant Center linkage or product availability/serving proof. Offline contract:
     docs/m3-listing-group-filter.md. Omitted account uses the configured default;
     explicit JSON null is invalid."""
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.listing_filter_draft(
         rails.SetListingGroupFilterIntent(cid, asset_group_id, product_item_ids))
 
@@ -919,7 +1004,7 @@ def draft_demand_gen_ad(ad_group_id: str, headline: str, description: str,
     ad group and PAUSED campaign. This tool does not create that group or upload assets.
     Confirm the draft to apply; creation can leave paused residue and is not reversible."""
     return rails.creation_draft(rails.DraftDemandGenAdIntent(
-        _resolve_customer_id(customer_id) if customer_id is None else customer_id, ad_group_id, headline, description, business_name,
+        _change_account(customer_id), ad_group_id, headline, description, business_name,
         square_marketing_image_asset_id, logo_image_asset_id, final_url))
 
 
@@ -932,7 +1017,7 @@ def create_shared_negative_set(name: str, customer_id: str | None = None) -> dic
     Omitted customer uses the default; explicit JSON null refuses.
     See docs/m3-shared-negative-sets.md.
     """
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.shared_negative_creation_draft(rails.CreateSharedNegativeSetIntent(cid, name))
 
 
@@ -943,7 +1028,7 @@ def add_to_shared_set(shared_set_id: str, keywords: list[dict], customer_id: str
     listed campaigns; later enablement activates exclusions. Requires the shared edit gate.
     Offline tested only. Confirm the draft to apply. See docs/m3-shared-negative-sets.md.
     """
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.shared_negative_add_draft(rails.AddToSharedSetIntent(cid, shared_set_id, keywords))
 
 
@@ -955,5 +1040,5 @@ def attach_shared_set(shared_set_id: str, campaign_id: str, customer_id: str | N
     Empty lists are allowed; existing active or removed target links refuse. Offline tested only.
     See docs/m3-shared-negative-sets.md.
     """
-    cid = _resolve_customer_id(customer_id) if customer_id is None else customer_id
+    cid = _change_account(customer_id)
     return rails.shared_negative_attach_draft(rails.AttachSharedSetIntent(cid, shared_set_id, campaign_id))

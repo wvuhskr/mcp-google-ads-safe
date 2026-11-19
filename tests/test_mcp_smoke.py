@@ -26,7 +26,7 @@ EXPECTED_TOOLS = {
     "get_negative_keywords",
     "search_geo_targets",
     "get_entities",
-    "list_accounts", "find_accounts", "use_account", "current_account",
+    "list_accounts", "find_accounts", "use_account", "current_account", "describe_fields",
     "draft_keywords",
     "remove_keywords",
     "update_keyword_bid",
@@ -41,7 +41,7 @@ EXPECTED_TOOLS = {
 def test_all_59_tools_publish_serializable_input_schemas():
     async def check():
         inventory = await mcp.list_tools()
-        assert len(inventory) == 63
+        assert len(inventory) == 64
         assert {tool.name for tool in inventory} == EXPECTED_TOOLS
         for tool in inventory:
             json.dumps(tool.input_schema)
@@ -120,10 +120,13 @@ def test_representative_read_and_write_flow_crosses_mcp_boundary(
     monkeypatch.setattr(
         client,
         "gaql",
-        lambda query, customer_id, page_token=None: {
-            "results": [{"campaign": {"id": "11"}}],
-            "next_page_token": None,
+        lambda query, customer_id, page_token=None, readable=False: {
+            "rows": [{"campaign": {"id": "11"}}],
+            "returned_count": 1,
             "total_results_count": 1,
+            "pages_complete": True,
+            "next_page_token": None,
+            "query_limited": False,
         },
     )
 
@@ -140,7 +143,9 @@ def test_representative_read_and_write_flow_crosses_mcp_boundary(
             {"campaign_id": "77", "daily_budget": "75", "customer_id": CID},
         )
         (draft_id,) = set(rails._DRAFTS) - drafts_before
-        draft_payload = json.loads(draft_result.content[0].text)
+        # mcp 2.x returns a result object; 1.x returns the content list itself
+        draft_content = getattr(draft_result, "content", draft_result)
+        draft_payload = json.loads(draft_content[0].text)
         assert draft_payload["draft_id"] == draft_id
         assert draft_payload["dry_run"] is True
         assert not fake_client.dispatch_calls
@@ -148,7 +153,8 @@ def test_representative_read_and_write_flow_crosses_mcp_boundary(
         apply_result = await mcp.call_tool(
             "confirm_and_apply", {"draft_id": draft_id}
         )
-        apply_payload = json.loads(apply_result.content[0].text)
+        apply_content = getattr(apply_result, "content", apply_result)
+        apply_payload = json.loads(apply_content[0].text)
         assert apply_payload["applied"] is True
         assert apply_payload["draft_id"] == draft_id
         assert len(fake_client.dispatch_calls) == 1

@@ -1,9 +1,10 @@
 # Changelog
 
-## 2.0.0 - unreleased
+## 2.0.0 - 2026-11-19
 
-Agency use (work in progress toward 2.0.0):
+Agency-ready and built for marketers. Breaking changes are marked.
 
+Agency use:
 - New tool `find_accounts`: search the accounts under the login manager by name. One
   request, no metrics, every level of the manager account.
 - New tools `use_account` and `current_account`: pick the account reports use when none is
@@ -11,15 +12,51 @@ Agency use (work in progress toward 2.0.0):
   (`ACCOUNT_REQUIRED`) if it does not while a pick is active.
 - New opt-in `GOOGLE_ADS_READ_SCOPE=manager`: reports on any enabled, visible account under
   the login manager without listing it. Changes stay limited to
-  `GOOGLE_ADS_WRITE_CUSTOMER_IDS` in every scope.
+  `GOOGLE_ADS_WRITE_CUSTOMER_IDS` in every scope, and every change looks its account up
+  fresh.
 - Startup and `health_check` prove the listed accounts with one request instead of walking
   the manager tree. The depth-3 / 500-account limit and `ANCESTRY_TRUNCATED` are gone.
   `list_accounts` is one request instead of one per account.
-- Breaking: `health_check` now returns `login_manager`, `read_scope` and
-  `reachable_accounts`; in manager scope it returns a count instead of an `accounts` list.
-- Breaking: every report answer carries an `account` block (`customer_id`, `selected_by`).
-- `health_check` `reachable_accounts` counts enabled, visible client accounts (managers excluded).
-- Tool count 63.
+- `advertiser.yaml` takes an optional `accounts:` map: each account can have its own
+  `advertiser_domain`, `blocked_terms` (added to the top-level list), `keyword_research`
+  and spend caps (`max_daily_budget`, `max_cpc`, `max_target_cpa`, in that account's own
+  currency). See `advertiser.example.yaml`. With per-account rules configured, a step that
+  does not say which account it is for is refused (`NO_ACCOUNT_CONTEXT`). Per-account caps
+  replace the environment caps for that account and are not held under them; an account
+  that sets any cap must set `max_daily_budget` and `max_cpc` together, and startup prints
+  each account that has its own caps.
+- Every draft names its account and the spend caps that apply, beside the preview.
+
+Reports:
+- Breaking: reports return readable rows by default: status and type names instead of
+  integers, only the fields selected, counts as numbers, and money both in micros and in
+  whole currency units (`cost`, `*_amount`). `run_gaql(raw=True)` returns the old rows.
+- Breaking: every report answer carries `account` (which account, how it was chosen) and
+  `provenance` (account name, currency, time zone, the resolved dates, the exact query,
+  rows returned out of total, whether it was cut, and a conversions note).
+- The five performance reports take `limit` (default 100, maximum 1,000). `get_search_terms`
+  no longer has a fixed 200-row cap. The default period is still the last 30 days, now sent
+  as explicit dates so the answer states them.
+- Breaking: giving only one of `date_range_start` / `date_range_end` is refused (`BAD_DATE`)
+  instead of silently using the default period.
+- New tool `describe_fields`: the common report resources in plain words, and for any
+  resource its selectable fields, metrics and segments from Google's field catalog.
+- `run_gaql` documents eight recipes, each run read-only against a live account.
+- Breaking: `health_check` returns `login_manager`, `read_scope` and `reachable_accounts`
+  (enabled, visible client accounts); in manager scope a count replaces the `accounts` list.
+
+Setup and packaging:
+- `mcp-google-ads-safe setup` and `mcp-google-ads-safe reauth`: guided sign-in in three
+  questions, then a ready-to-paste read-only client configuration. The bare command still
+  serves.
+- One-line run: `uvx --from git+https://github.com/wvuhskr/mcp-google-ads-safe mcp-google-ads-safe`.
+- `mcp>=1.30.0` (CVE-2026-59951, CVE-2026-116684/5/6), `Pillow>=13.0.0` (CVE-2026-128066,
+  CVE-2026-128067), `google-ads` 32 through 35 (all ship API v25). CI adds `pip-audit` and a
+  job on the oldest supported `mcp`. PyPI trusted-publishing workflow added.
+- README rewritten for marketers. 4,001 tests. Tool count 64.
+
+Not changed: creating a conversion action still reads every account under the manager
+before it will draft, so it stays slow on very large manager accounts.
 
 ## 1.1.0 - 2026-09-14
 

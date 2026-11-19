@@ -13,6 +13,7 @@ primitive, and the ONE state-changing path `_dispatch`. Money<->micros lives onl
 """
 import base64
 import binascii
+import datetime
 import decimal
 import hashlib
 import io
@@ -21,6 +22,7 @@ import os
 import re
 import time
 import warnings
+import zoneinfo
 
 import yaml
 from google.ads.googleads.client import GoogleAdsClient
@@ -242,7 +244,70 @@ def _unwrap_token(page_token, query, customer_id):
     return page_token
 
 
-def gaql(query, customer_id, page_token=None) -> dict:
+# --- readable rows ----------------------------------------------------------------------
+# Metrics Google reports in millionths of a currency unit without saying so in the name.
+_MICROS_METRICS = frozenset({
+    "average_cost", "average_cpc", "average_cpe", "average_cpm", "average_cpv",
+    "cost_per_all_conversions", "cost_per_conversion",
+    "cost_per_current_model_attributed_conversion"})
+
+
+def _selected_paths(query):
+    """The dotted field paths of a query's SELECT list, or None when it cannot be read."""
+    m = re.match(r"\s*SELECT\s+(.*?)\s+FROM\s", query or "", re.IGNORECASE | re.DOTALL)
+    return [part.strip() for part in m.group(1).split(",") if part.strip()] if m else None
+
+
+def _whole_number(value):
+    return int(value) if isinstance(value, str) and re.fullmatch(r"-?[0-9]+", value) else value
+
+
+def _plain_numbers(node, in_metrics=False):
+    """Counts as numbers and money in whole currency units, next to the original fields."""
+    if isinstance(node, list):
+        return [_plain_numbers(item, in_metrics) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for key, value in node.items():
+        if isinstance(value, (dict, list)):
+            out[key] = _plain_numbers(value, in_metrics or key == "metrics")
+            continue
+        money = ((key.endswith("_micros") and not key.endswith("_fraction_micros"))
+                 or (in_metrics and key in _MICROS_METRICS))
+        if in_metrics or money:
+            value = _whole_number(value)
+        out[key] = value
+        if money and isinstance(value, (int, float)) and not isinstance(value, bool):
+            plain = key[:-len("_micros")] if key.endswith("_micros") else key + "_amount"
+            # Six places is exact for micros: nothing small or three-decimal is rounded away.
+            out.setdefault(plain, round(value / 1_000_000, 6))
+    return out
+
+
+def _readable_row(row, paths):
+    """One GoogleAdsRow as a plain dict a person can read: enum NAMES, only the fields the
+    query selected (the full proto dump carries every unset field of each message), counts
+    as numbers, and money both as Google's micros and in whole currency units."""
+    full = type(row).to_dict(row, use_integers_for_enums=False)
+    if not paths:
+        return _plain_numbers(full)
+    out = {}
+    for path in paths:
+        src, dst, parts = full, out, path.split(".")
+        for i, part in enumerate(parts):
+            key = part
+            if isinstance(src, dict) and part not in src and part + "_" in src:
+                key = part + "_"                        # proto-plus renames `type` to `type_`
+            value = src.get(key) if isinstance(src, dict) else None
+            if i == len(parts) - 1:
+                dst[part] = value                       # selected but unset shows as null
+            else:
+                src, dst = value, dst.setdefault(part, {})
+    return _plain_numbers(out)
+
+
+def gaql(query, customer_id, page_token=None, readable=False) -> dict:
     """Run up to GOOGLE_ADS_MAX_PAGES pages of a GAQL query and return an envelope:
     {rows, returned_count, total_results_count, query_limited, pages_complete,
     next_page_token}. Truncation happens only on a page boundary and the returned
@@ -265,7 +330,8 @@ def gaql(query, customer_id, page_token=None) -> dict:
         if not next_token:
             break
     return {
-        "rows": [type(r).to_dict(r) for r in rows],
+        "rows": ([_readable_row(r, _selected_paths(query)) for r in rows] if readable
+                 else [type(r).to_dict(r) for r in rows]),
         "returned_count": len(rows),
         "total_results_count": total,
         "query_limited": _has_limit(query),
@@ -1181,23 +1247,225 @@ def list_accounts() -> list[dict]:
 
 
 # --- canned-GAQL report/lookup functions -------------------------------------------------
-# Every function here builds a fixed GAQL string and returns gaql(query, customer_id,
-# page_token) DIRECTLY -- never gaql_all/_scan_rows (those hard-refuse a LIMIT, and
-# search_terms below needs one). No decoding: the envelope's rows are proto-plus's raw
-# to_dict() dicts (snake_case keys, integer enums, string *_micros/id int64 fields) exactly
-# like run_gaql already returns today -- callers decode themselves.
+# Every function here builds a fixed GAQL string and returns readable_report(...): readable
+# rows (enum names, selected fields only, money in whole units beside the micros) plus a
+# provenance block. Never gaql_all/_scan_rows (those hard-refuse a LIMIT, and the performance
+# reports need one). run_gaql(raw=True) still returns client.gaql's untouched proto dicts.
 
-def _date_clause(date_range_start, date_range_end) -> str:
-    """GAQL date filter fragment (no leading AND). Explicit range -> BETWEEN; otherwise
-    default to the last 30 days so a report never silently returns lifetime totals.
+# --- field catalog -----------------------------------------------------------------------
+# The resources people report on most, in plain words. describe_fields(resource) then asks
+# Google's own field catalog (GoogleAdsFieldService) for what each one can select.
+COMMON_RESOURCES = {
+    "customer": "The account itself: name, currency, time zone, account-level totals.",
+    "campaign": "Campaigns: name, status, channel type, bidding, and campaign-level metrics.",
+    "campaign_budget": "Budgets: daily amount, whether shared, which campaigns use them.",
+    "ad_group": "Ad groups: name, status, bids, and ad-group-level metrics.",
+    "ad_group_ad": "Ads: ad text, final URLs, approval status, and ad-level metrics.",
+    "keyword_view": "Keywords with performance metrics (text and match type via ad_group_criterion).",
+    "ad_group_criterion": "Ad-group targeting: keywords, negatives, bids, quality score.",
+    "campaign_criterion": "Campaign targeting: locations, languages, schedules, negatives.",
+    "search_term_view": "The searches people actually typed that triggered ads.",
+    "geographic_view": "Performance by the location of the person or their interest.",
+    "asset_group": "Performance Max asset groups and their metrics.",
+    "asset": "Assets: sitelinks, callouts, images, text.",
+    "conversion_action": "Conversion actions: name, category, counting, primary or secondary.",
+    "bidding_strategy": "Portfolio bidding strategies and their targets.",
+    "recommendation": "Google's optimization suggestions for the account.",
+    "change_event": "The account change history (who changed what, last 30 days).",
+}
+_FIELD_CACHE: dict = {}
+
+
+def _field_rows(query) -> list[dict]:
+    """One GoogleAdsFieldService search (field metadata, no account data) as plain dicts."""
+    c = gads()
+    request = c.get_type("SearchGoogleAdsFieldsRequest")
+    request.query = query
+    return [type(f).to_dict(f, use_integers_for_enums=False)
+            for f in c.get_service("GoogleAdsFieldService").search_google_ads_fields(
+                request=request)]
+
+
+def describe_fields(resource=None, category=None, name_contains=None) -> dict:
+    """With no resource: the common report resources in plain words. With a resource: what a
+    query FROM it can select, straight from Google's field catalog, cached per process."""
+    from .rails import RailViolation
+    if name_contains is not None and type(name_contains) is not str:
+        raise RailViolation("name_contains must be text", code="BAD_INPUT")
+    if category not in (None, "attributes", "metrics", "segments"):
+        raise RailViolation("category must be 'attributes', 'metrics' or 'segments'",
+                            code="BAD_INPUT")
+    needle = (name_contains or "").strip().casefold()
+    if resource is None:
+        return {"resources": [{"resource": name, "description": text}
+                              for name, text in COMMON_RESOURCES.items()
+                              if needle in name or needle in text.casefold()],
+                "next": "describe_fields(resource='campaign') lists what that resource can "
+                        "select. Any Google Ads resource name works, not only these."}
+    # Lowercase letters and underscores only: the name is interpolated into the catalog query.
+    if type(resource) is not str or not re.fullmatch(r"[a-z][a-z_]{0,59}", resource):
+        raise RailViolation("resource must be a Google Ads resource name such as 'campaign' "
+                            "or 'ad_group_ad'", code="BAD_INPUT")
+    entry = _FIELD_CACHE.get(resource)
+    if entry is None:
+        found = _field_rows(
+            "SELECT name, category, metrics, segments, attribute_resources "
+            f"WHERE name = '{resource}'")
+        if len(found) != 1 or found[0].get("category") != "RESOURCE":
+            raise RailViolation(
+                f"{resource!r} is not a Google Ads resource — describe_fields() with no "
+                "resource lists the common ones", code="UNKNOWN_RESOURCE")
+        attributes = _field_rows(
+            "SELECT name, category, data_type, selectable, filterable, sortable, is_repeated "
+            f"WHERE name LIKE '{resource}.%'")
+        entry = {
+            "attributes": sorted(
+                ({"name": a["name"], "data_type": a.get("data_type"),
+                  "filterable": bool(a.get("filterable")), "sortable": bool(a.get("sortable"))}
+                 for a in attributes if a.get("selectable")), key=lambda a: a["name"]),
+            "metrics": sorted(found[0].get("metrics") or []),
+            "segments": sorted(found[0].get("segments") or []),
+            "related_resources": sorted(found[0].get("attribute_resources") or []),
+        }
+        _FIELD_CACHE[resource] = entry
+    out = {"resource": resource, "attributes_count": len(entry["attributes"]),
+           "metrics_count": len(entry["metrics"]), "segments_count": len(entry["segments"]),
+           "related_resources": entry["related_resources"]}
+    if category in (None, "attributes"):
+        out["attributes"] = [a for a in entry["attributes"] if needle in a["name"].casefold()]
+    for kind in ("metrics", "segments"):
+        if category == kind:
+            out[kind] = [name for name in entry[kind] if needle in name.casefold()]
+    out["next"] = (f"category='metrics' or category='segments' lists those for {resource}; "
+                   "name_contains narrows any list. Fields of related_resources can be "
+                   f"selected in the same query FROM {resource}.")
+    return out
+
+
+REPORT_LIMIT_DEFAULT = 100
+REPORT_LIMIT_MAX = 1000
+_ACCOUNT_META_CACHE: dict = {}
+_CONVERSIONS_NOTE = (
+    "conversions and conversions_value count only conversion actions included in the "
+    "Conversions column (include_in_conversions_metric); all_conversions counts every action. "
+    "With dates, conversions_by_conversion_date is the column dated by when the conversion "
+    "happened; plain conversions is not that column. Recent days can still change.")
+
+
+def _today(time_zone) -> datetime.date:
+    return datetime.datetime.now(zoneinfo.ZoneInfo(time_zone)).date()
+
+
+def account_meta(customer_id) -> dict:
+    """Name, currency and time zone of one account, for report provenance. One query per
+    account per process. A failed lookup is not cached and yields empty details rather
+    than failing the report it decorates."""
+    cid = _digits(customer_id)
+    cached = _ACCOUNT_META_CACHE.get(cid)
+    if cached is not None:
+        return dict(cached)
+    meta = {"customer_id": cid, "descriptive_name": None, "currency_code": None,
+            "time_zone": None}
+    try:
+        rows, _, _ = _search_one_page(
+            "SELECT customer.id, customer.descriptive_name, customer.currency_code, "
+            "customer.time_zone FROM customer LIMIT 1", cid, None)
+    except Exception:
+        return meta
+    if rows:
+        c = rows[0].customer
+        meta.update(descriptive_name=c.descriptive_name or None,
+                    currency_code=c.currency_code or None, time_zone=c.time_zone or None)
+        _ACCOUNT_META_CACHE[cid] = dict(meta)
+    return meta
+
+
+def known_account(customer_id) -> dict:
+    """Name and currency of an account IF an earlier report, pick or manager-scope check
+    already learned them. Never asks Google: change previews use this so drafting a change
+    adds no read of its own."""
+    cid = _digits(customer_id)
+    found = _ACCOUNT_META_CACHE.get(cid)
+    if found is None:
+        found = next((entry[0] for (_, known), entry in _DESCENDANT_CACHE.items()
+                      if known == cid), {})
+    return {"customer_id": cid, "descriptive_name": found.get("descriptive_name"),
+            "currency_code": found.get("currency_code")}
+
+
+def _report_limit(limit) -> int:
+    from .rails import RailViolation
+    if type(limit) is not int or not 1 <= limit <= REPORT_LIMIT_MAX:
+        raise RailViolation(
+            f"limit must be a whole number from 1 to {REPORT_LIMIT_MAX:,}", code="BAD_LIMIT")
+    return limit
+
+
+def _report_period(customer_id, date_range_start, date_range_end) -> dict:
+    """Resolve a report's dates to an explicit start and end. With no dates given the default
+    is Google's LAST_30_DAYS (30 days, not including today, in the account's time zone),
+    computed here and sent as BETWEEN so the provenance states exactly what was queried.
     Dates must be YYYY-MM-DD: they are interpolated into GAQL, so nothing else is allowed."""
+    from .rails import RailViolation
+    if bool(date_range_start) != bool(date_range_end):
+        raise RailViolation("give both date_range_start and date_range_end, or neither",
+                            code="BAD_DATE")
     if date_range_start and date_range_end:
-        from .rails import RailViolation
         for d in (date_range_start, date_range_end):
             if not isinstance(d, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", d):
                 raise RailViolation(f"date {d!r} must be YYYY-MM-DD", code="BAD_DATE")
-        return f"segments.date BETWEEN '{date_range_start}' AND '{date_range_end}'"
-    return "segments.date DURING LAST_30_DAYS"
+        return {"start_date": date_range_start, "end_date": date_range_end,
+                "basis": "dates given"}
+    time_zone = account_meta(customer_id)["time_zone"]
+    try:
+        today = _today(time_zone)
+    except Exception:
+        # No time zone to compute with: let Google resolve the same window itself and say
+        # so, rather than fail a report over its label or guess the dates.
+        return {"start_date": None, "end_date": None,
+                "basis": "default: last 30 days, not including today, resolved by Google in "
+                         "the account time zone (the exact dates could not be computed here)"}
+    return {"start_date": (today - datetime.timedelta(days=30)).isoformat(),
+            "end_date": (today - datetime.timedelta(days=1)).isoformat(),
+            "basis": "default: last 30 days, not including today, in the account time zone"}
+
+
+def _date_clause(period) -> str:
+    if period["start_date"] is None:
+        return "segments.date DURING LAST_30_DAYS"
+    return f"segments.date BETWEEN '{period['start_date']}' AND '{period['end_date']}'"
+
+
+def readable_report(query, customer_id, page_token=None, period=None, has_limit=False) -> dict:
+    """Run one read query and return readable rows plus a provenance block: which account
+    (name, currency, time zone), the resolved dates, the exact query, how many rows came
+    back out of how many, and whether the answer was cut."""
+    meta = account_meta(customer_id)   # cached; always before the report query
+    out = gaql(query, customer_id, page_token, readable=True)
+    total, returned = out["total_results_count"], out["returned_count"]
+    # A resumed page is complete when no further page follows; total counts every page.
+    truncated = (not out["pages_complete"]) or (
+        page_token is None and type(total) is int and total > returned)
+    prov = {"account": meta, "query": query, "rows_returned": returned, "rows_total": total,
+            "truncated": truncated}
+    if period:
+        prov["period"] = period
+    if truncated:
+        prov["how_to_get_more"] = (
+            f"Showing {returned:,} of {total:,} rows. " if type(total) is int else "") + (
+            f"Raise limit (up to {REPORT_LIMIT_MAX:,}), shorten the date range, or use "
+            "run_gaql with a WHERE filter." if has_limit else
+            "Pass next_page_token back as page_token for the next page, or narrow it with "
+            "run_gaql and a WHERE filter or LIMIT.")
+    if "conversions" in query:
+        prov["conversions_note"] = _CONVERSIONS_NOTE
+    if "micros" in query or any(f"metrics.{m}" in query for m in _MICROS_METRICS):
+        prov["money_note"] = (
+            f"Money is in the account currency ({meta['currency_code'] or 'unknown'}). Fields "
+            "ending _micros and the average/cost-per metrics are millionths of one currency "
+            "unit; cost and the *_amount fields are the same values in whole units.")
+    out["provenance"] = prov
+    return out
 
 
 def account_info(customer_id) -> dict:
@@ -1210,89 +1478,84 @@ def account_info(customer_id) -> dict:
         "FROM customer",
         "LIMIT 1",
     ])
-    return gaql(query, customer_id)
+    return readable_report(query, customer_id)
+
+
+def _performance_report(customer_id, select, source, where, order, date_range_start,
+                        date_range_end, page_token, limit) -> dict:
+    limit = _report_limit(limit)
+    period = _report_period(customer_id, date_range_start, date_range_end)
+    conditions = " AND ".join([*where, _date_clause(period)])
+    query = (f"SELECT {select} FROM {source} WHERE {conditions} "
+             f"ORDER BY {order} DESC LIMIT {limit}")
+    return readable_report(query, customer_id, page_token, period, has_limit=True)
 
 
 def campaign_performance(customer_id, date_range_start=None, date_range_end=None,
-                         page_token=None) -> dict:
-    """Campaign performance report (impressions/clicks/cost/conversions), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
-    query = " ".join([
-        "SELECT campaign.id, campaign.name, campaign.status,",
-        "campaign.advertising_channel_type, campaign.bidding_strategy_type,",
-        "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions,",
-        "metrics.conversions_value, metrics.ctr, metrics.average_cpc",
-        "FROM campaign",
-        f"WHERE campaign.status != 'REMOVED' AND {_date_clause(date_range_start, date_range_end)}",
-        "ORDER BY metrics.cost_micros DESC",
-    ])
-    return gaql(query, customer_id, page_token)
+                         page_token=None, limit=REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per campaign: impressions, clicks, cost, conversions, conversion value, CTR
+    and average CPC, highest spend first. Last 30 days unless dates are given."""
+    return _performance_report(
+        customer_id,
+        "campaign.id, campaign.name, campaign.status, campaign.advertising_channel_type, "
+        "campaign.bidding_strategy_type, metrics.impressions, metrics.clicks, "
+        "metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.ctr, "
+        "metrics.average_cpc",
+        "campaign", ["campaign.status != 'REMOVED'"], "metrics.cost_micros",
+        date_range_start, date_range_end, page_token, limit)
 
 
 def ad_performance(customer_id, date_range_start=None, date_range_end=None,
-                   page_token=None) -> dict:
-    """Ad-level performance report (responsive search ad text + metrics), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
-    query = " ".join([
-        "SELECT campaign.name, campaign.id, ad_group.name, ad_group.id,",
-        "ad_group_ad.ad.id, ad_group_ad.ad.type,",
-        "ad_group_ad.ad.responsive_search_ad.headlines,",
-        "ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.ad.final_urls,",
-        "ad_group_ad.status, metrics.impressions, metrics.clicks, metrics.ctr,",
+                   page_token=None, limit=REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per ad: responsive search ad text, final URLs, status and metrics, highest
+    spend first. Last 30 days unless dates are given."""
+    return _performance_report(
+        customer_id,
+        "campaign.name, campaign.id, ad_group.name, ad_group.id, ad_group_ad.ad.id, "
+        "ad_group_ad.ad.type, ad_group_ad.ad.responsive_search_ad.headlines, "
+        "ad_group_ad.ad.responsive_search_ad.descriptions, ad_group_ad.ad.final_urls, "
+        "ad_group_ad.status, metrics.impressions, metrics.clicks, metrics.ctr, "
         "metrics.conversions, metrics.cost_micros",
-        "FROM ad_group_ad",
-        f"WHERE ad_group_ad.status != 'REMOVED' AND {_date_clause(date_range_start, date_range_end)}",
-        "ORDER BY metrics.cost_micros DESC",
-    ])
-    return gaql(query, customer_id, page_token)
+        "ad_group_ad", ["ad_group_ad.status != 'REMOVED'"], "metrics.cost_micros",
+        date_range_start, date_range_end, page_token, limit)
 
 
 def keyword_performance(customer_id, date_range_start=None, date_range_end=None,
-                        page_token=None) -> dict:
-    """Keyword-level performance report (quality score + metrics), ordered by spend
-    descending. Defaults to the last 30 days when no explicit date range is given."""
-    query = " ".join([
-        "SELECT campaign.name, ad_group.name, ad_group_criterion.keyword.text,",
-        "ad_group_criterion.keyword.match_type,",
-        "ad_group_criterion.quality_info.quality_score, metrics.impressions,",
-        "metrics.clicks, metrics.ctr, metrics.average_cpc, metrics.cost_micros,",
-        "metrics.conversions",
-        "FROM keyword_view",
-        f"WHERE ad_group_criterion.status != 'REMOVED' AND {_date_clause(date_range_start, date_range_end)}",
-        "ORDER BY metrics.cost_micros DESC",
-    ])
-    return gaql(query, customer_id, page_token)
+                        page_token=None, limit=REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per keyword: text, match type, quality score and metrics, highest spend
+    first. Last 30 days unless dates are given."""
+    return _performance_report(
+        customer_id,
+        "campaign.name, ad_group.name, ad_group_criterion.keyword.text, "
+        "ad_group_criterion.keyword.match_type, "
+        "ad_group_criterion.quality_info.quality_score, metrics.impressions, metrics.clicks, "
+        "metrics.ctr, metrics.average_cpc, metrics.cost_micros, metrics.conversions",
+        "keyword_view", ["ad_group_criterion.status != 'REMOVED'"], "metrics.cost_micros",
+        date_range_start, date_range_end, page_token, limit)
 
 
 def search_terms(customer_id, date_range_start=None, date_range_end=None,
-                 page_token=None) -> dict:
-    """Search-terms report, ordered by clicks descending, capped at 200 rows (an account can
-    have far more distinct search terms than fit in one page). The date clause is the ONLY
-    WHERE condition -- no leading AND."""
-    query = " ".join([
-        "SELECT search_term_view.search_term, campaign.name, ad_group.name,",
-        "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions",
-        "FROM search_term_view",
-        f"WHERE {_date_clause(date_range_start, date_range_end)}",
-        "ORDER BY metrics.clicks DESC",
-        "LIMIT 200",
-    ])
-    return gaql(query, customer_id, page_token)
+                 page_token=None, limit=REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per search term people typed, with campaign, ad group and metrics, most
+    clicks first. Last 30 days unless dates are given."""
+    return _performance_report(
+        customer_id,
+        "search_term_view.search_term, campaign.name, ad_group.name, metrics.impressions, "
+        "metrics.clicks, metrics.cost_micros, metrics.conversions",
+        "search_term_view", [], "metrics.clicks",
+        date_range_start, date_range_end, page_token, limit)
 
 
 def geo_performance(customer_id, date_range_start=None, date_range_end=None,
-                    page_token=None) -> dict:
-    """Geographic performance report, ordered by spend descending. The date clause is the
-    ONLY WHERE condition -- no leading AND."""
-    query = " ".join([
-        "SELECT campaign.name, geographic_view.country_criterion_id,",
-        "geographic_view.location_type, metrics.impressions, metrics.clicks,",
-        "metrics.cost_micros, metrics.conversions",
-        "FROM geographic_view",
-        f"WHERE {_date_clause(date_range_start, date_range_end)}",
-        "ORDER BY metrics.cost_micros DESC",
-    ])
-    return gaql(query, customer_id, page_token)
+                    page_token=None, limit=REPORT_LIMIT_DEFAULT) -> dict:
+    """One row per campaign and country/location type with metrics, highest spend first.
+    Last 30 days unless dates are given."""
+    return _performance_report(
+        customer_id,
+        "campaign.name, geographic_view.country_criterion_id, geographic_view.location_type, "
+        "metrics.impressions, metrics.clicks, metrics.cost_micros, metrics.conversions",
+        "geographic_view", [], "metrics.cost_micros",
+        date_range_start, date_range_end, page_token, limit)
 
 
 def negative_keywords(customer_id, page_token=None) -> dict:
@@ -1304,7 +1567,7 @@ def negative_keywords(customer_id, page_token=None) -> dict:
         "FROM campaign_criterion",
         "WHERE campaign_criterion.negative = TRUE AND campaign_criterion.status != 'REMOVED'",
     ])
-    return gaql(query, customer_id, page_token)
+    return readable_report(query, customer_id, page_token)
 
 
 def geo_targets(customer_id, query, page_token=None) -> dict:
@@ -1319,7 +1582,7 @@ def geo_targets(customer_id, query, page_token=None) -> dict:
         "FROM geo_target_constant",
         f"WHERE geo_target_constant.name LIKE '%{escaped}%'",
     ])
-    return gaql(q, customer_id, page_token)
+    return readable_report(q, customer_id, page_token)
 
 
 _ENTITY_READ = {
@@ -1384,7 +1647,7 @@ def entities(customer_id, entity_type, ids=None, parent_id=None, page_token=None
         where.append(f"{resolved['ids_field']} IN ({', '.join(str(int(i)) for i in ids)})")
 
     query = f"SELECT {resolved['fields']} FROM {resolved['from']} WHERE " + " AND ".join(where)
-    return gaql(query, customer_id, page_token)
+    return readable_report(query, customer_id, page_token)
 
 
 # --- accounts under the login manager ----------------------------------------------------

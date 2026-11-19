@@ -15,7 +15,7 @@ NAMES = set('''attach_shared_set add_to_shared_set create_shared_negative_set dr
 health_check run_gaql update_campaign update_ad_group pause_entity enable_entity
 confirm_and_apply undo_change get_account_info get_campaign_performance get_ad_performance
 get_keyword_performance get_search_terms get_geo_performance get_negative_keywords
-search_geo_targets get_entities list_accounts find_accounts use_account current_account draft_keywords remove_keywords
+search_geo_targets get_entities list_accounts find_accounts use_account current_account describe_fields draft_keywords remove_keywords
 update_keyword_bid add_negative_keywords remove_negative_keywords exclude_geo_target
 remove_geo_target set_campaign_schedule upload_image_asset upload_text_asset create_custom_audience add_audience_targeting create_conversion_action set_conversion_action_primary_status'''.split())
 
@@ -141,7 +141,7 @@ def test_exact_inventory_and_original_schemas():
     wrapped_tools = asyncio.run(app.mcp.list_tools())
     reference = asyncio.run(plain.list_tools())
     assert {t.name for t in wrapped_tools} == NAMES
-    assert len(wrapped_tools) == 63
+    assert len(wrapped_tools) == 64
     assert {t.name: t.model_dump() for t in wrapped_tools} == {
         t.name: t.model_dump() for t in reference}
     for name in NAMES:
@@ -159,7 +159,12 @@ def test_async_registration_preserves_original():
     assert payload(boundary(server, 'asynchronous', {})) == {'code': 'RAIL_VIOLATION', 'reason': 'x'}
 
 
-def test_successful_read_value_is_unchanged(fake_client):
+def test_successful_read_value_is_unchanged(fake_client, monkeypatch):
+    monkeypatch.setattr(
+        client, "gaql",
+        lambda q, cid, page_token=None, readable=False: {
+            "rows": [], "returned_count": 0, "total_results_count": 0,
+            "pages_complete": True, "next_page_token": None, "query_limited": False})
     arguments = {'query': 'SELECT campaign.id FROM campaign'}
     result = boundary(app.mcp, 'run_gaql', arguments)
     assert not result.model_dump(by_alias=True)['isError']

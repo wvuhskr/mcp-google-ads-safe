@@ -1,4 +1,5 @@
 recursive-include tests *.py
 recursive-include docs *.md
 include CHANGELOG.md
+include advertiser.example.yaml
 include SECURITY.md CONTRIBUTING.md

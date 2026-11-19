@@ -643,21 +643,36 @@ def test_list_accounts_returns_read_allowlisted_with_name_and_currency(fake_gads
 
 # ==========================================================================================
 # M1-READS: 9 read tools (client-layer). Every function below is a canned-GAQL wrapper that
-# MUST go through client.gaql (never gaql_all/_scan_rows) -- get_search_terms's LIMIT 200 is
-# the concrete proof (gaql_all hard-refuses any LIMIT). Money/enum policy: no decoding here,
-# just assert the envelope carries proto-plus's raw dict rows through unchanged.
+# MUST go through client.gaql (never gaql_all/_scan_rows) -- the report LIMIT is the concrete
+# proof (gaql_all hard-refuses any LIMIT). Readable-output policy: each report returns
+# client.readable_report(...): rows carry enum NAMES (not integers), only the fields in the
+# query's SELECT list, counts under "metrics" as ints, and every X_micros money field with a
+# sibling X in whole currency units (cost_micros 25000000 -> cost 25.0); ids outside metrics
+# stay strings. The result also has a "provenance" dict. Each report makes ONE extra request
+# first (account name/currency/time zone, cached per account per process), so the report query
+# is always search_requests[-1]. The five performance reports take limit (default 100, 1..1000)
+# and end their query with LIMIT <n>; the date clause comes from _report_period.
 # ==========================================================================================
 
 # --- _date_clause (pure, no fake_gads needed) --------------------------------------------
 
 def test_date_clause_default_last_30_days_and_explicit_between():
-    assert client._date_clause(None, None) == "segments.date DURING LAST_30_DAYS"
-    assert client._date_clause("", "") == "segments.date DURING LAST_30_DAYS"
-    # discriminating: only ONE side given still defaults (BETWEEN needs both)
-    assert client._date_clause("2026-01-01", None) == "segments.date DURING LAST_30_DAYS"
-    assert client._date_clause(None, "2026-01-31") == "segments.date DURING LAST_30_DAYS"
-    assert client._date_clause("2026-01-01", "2026-01-31") == (
+    # unknown time zone (the canned row has none): Google resolves the window itself
+    unknown_tz = {"start_date": None, "end_date": None, "basis": "default"}
+    assert client._date_clause(unknown_tz) == "segments.date DURING LAST_30_DAYS"
+    given = client._report_period(CID, "2026-01-01", "2026-01-31")
+    assert given == {"start_date": "2026-01-01", "end_date": "2026-01-31",
+                     "basis": "dates given"}
+    assert client._date_clause(given) == (
         "segments.date BETWEEN '2026-01-01' AND '2026-01-31'")
+    # only ONE side given is refused, not silently replaced by the default window
+    for one_sided in (("2026-01-01", None), (None, "2026-01-31")):
+        with pytest.raises(rails.RailViolation) as lone:
+            client._report_period(CID, *one_sided)
+        assert lone.value.code == "BAD_DATE"
+    with pytest.raises(rails.RailViolation) as exc:
+        client._report_period(CID, "yesterday", "2026-01-31")
+    assert exc.value.code == "BAD_DATE"
 
 
 # --- page_token plumbing: one test covers ALL 8 multi-row reads (get_account_info has none)
@@ -665,9 +680,11 @@ def test_date_clause_default_last_30_days_and_explicit_between():
 def test_page_token_threads_through_every_multi_row_read(monkeypatch):
     calls = []
 
-    def fake_gaql(q, cid, page_token=None):
+    def fake_gaql(q, cid, page_token=None, readable=False):
+        assert readable is True
         calls.append((q, cid, page_token))
-        return {"rows": []}
+        return {"rows": [], "returned_count": 0, "total_results_count": 0,
+                "pages_complete": True, "next_page_token": None, "query_limited": False}
 
     monkeypatch.setattr(client, "gaql", fake_gaql)
     sentinel = "TOKEN123"
@@ -694,7 +711,7 @@ def test_account_info_query_and_row_roundtrip(fake_gads):
         "customer.time_zone": "America/New_York",
         "customer.auto_tagging_enabled": True,
         "customer.manager": False,
-        "customer.status": 2,  # raw enum int -- NOT decoded (money/enum policy)
+        "customer.status": 2,  # enum integer; the report shows its name
     })
     fake_gads.search_responses[(CID, "")] = make_search_response([row])
     env = client.account_info(CID)
@@ -703,13 +720,11 @@ def test_account_info_query_and_row_roundtrip(fake_gads):
         "customer.time_zone, customer.auto_tagging_enabled, customer.manager, "
         "customer.status FROM customer LIMIT 1"
     )
-    cust = env["rows"][0]["customer"]
-    assert cust["id"] == "1234567890"
-    assert cust["descriptive_name"] == "Synthetic Test Advertiser"
-    assert cust["currency_code"] == "USD"
-    assert cust["auto_tagging_enabled"] is True
-    assert cust["manager"] is False
-    assert cust["status"] == 2
+    assert env["rows"][0] == {"customer": {
+        "id": "1234567890", "descriptive_name": "Synthetic Test Advertiser",
+        "currency_code": "USD", "time_zone": "America/New_York",
+        "auto_tagging_enabled": True, "manager": False, "status": "ENABLED"}}
+    assert env["provenance"]["account"]["customer_id"] == CID
 
 
 def test_account_info_has_no_page_token_param():
@@ -733,13 +748,14 @@ def test_campaign_performance_default_date_range_query_and_row(fake_gads):
         "metrics.conversions_value, metrics.ctr, metrics.average_cpc "
         "FROM campaign "
         "WHERE campaign.status != 'REMOVED' AND segments.date DURING LAST_30_DAYS "
-        "ORDER BY metrics.cost_micros DESC"
+        "ORDER BY metrics.cost_micros DESC LIMIT 100"
     )
     got = env["rows"][0]
     assert got["campaign"]["id"] == "42"
     assert got["campaign"]["name"] == "z. Remarketing"
-    assert got["metrics"]["cost_micros"] == "25000000"
-    assert got["metrics"]["impressions"] == "1000"
+    assert got["metrics"]["cost_micros"] == 25000000
+    assert got["metrics"]["cost"] == 25.0
+    assert got["metrics"]["impressions"] == 1000
 
 
 def test_campaign_performance_explicit_date_range(fake_gads):
@@ -775,14 +791,14 @@ def test_ad_performance_query_and_row_roundtrip(fake_gads):
         "metrics.conversions, metrics.cost_micros "
         "FROM ad_group_ad "
         "WHERE ad_group_ad.status != 'REMOVED' AND segments.date DURING LAST_30_DAYS "
-        "ORDER BY metrics.cost_micros DESC"
+        "ORDER BY metrics.cost_micros DESC LIMIT 100"
     )
     got = env["rows"][0]
     assert got["campaign"]["name"] == "GQ - A/C"
     assert got["ad_group"]["name"] == "Broad"
     assert got["ad_group_ad"]["ad"]["id"] == "555"
-    assert got["ad_group_ad"]["status"] == 2
-    assert got["metrics"]["clicks"] == "10"
+    assert got["ad_group_ad"]["status"] == "ENABLED"
+    assert got["metrics"]["clicks"] == 10
 
 
 # --- 4: get_keyword_performance -> client.keyword_performance ------------------------------
@@ -804,18 +820,19 @@ def test_keyword_performance_query_and_row_roundtrip(fake_gads):
         "metrics.conversions "
         "FROM keyword_view "
         "WHERE ad_group_criterion.status != 'REMOVED' AND segments.date DURING LAST_30_DAYS "
-        "ORDER BY metrics.cost_micros DESC"
+        "ORDER BY metrics.cost_micros DESC LIMIT 100"
     )
     got = env["rows"][0]["ad_group_criterion"]
     assert got["keyword"]["text"] == "ac repair"
-    assert got["keyword"]["match_type"] == 2
+    assert got["keyword"]["match_type"] == "EXACT"
     assert got["quality_info"]["quality_score"] == 7
-    assert env["rows"][0]["metrics"]["cost_micros"] == "12000000"
+    assert env["rows"][0]["metrics"]["cost_micros"] == 12000000
+    assert env["rows"][0]["metrics"]["cost"] == 12.0
 
 
-# --- 5: get_search_terms -> client.search_terms (LIMIT 200, no leading AND) ----------------
+# --- 5: get_search_terms -> client.search_terms (default LIMIT 100, no leading AND) ----------------
 
-def test_search_terms_query_has_no_leading_and_and_limit_200(fake_gads):
+def test_search_terms_query_has_no_leading_and_and_default_limit_100(fake_gads):
     row = make_row(**{
         "search_term_view.search_term": "ac repair near me",
         "campaign.name": "GQ - A/C", "metrics.clicks": 3,
@@ -829,14 +846,14 @@ def test_search_terms_query_has_no_leading_and_and_limit_200(fake_gads):
         "FROM search_term_view "
         "WHERE segments.date DURING LAST_30_DAYS "
         "ORDER BY metrics.clicks DESC "
-        "LIMIT 200"
+        "LIMIT 100"
     )
     # the date clause is the ONLY where condition -- no "REMOVED' AND" style leading filter
     assert "WHERE segments.date" in sent and "AND segments.date" not in sent
-    assert sent.endswith("LIMIT 200")
+    assert sent.endswith("LIMIT 100")
     got = env["rows"][0]
     assert got["search_term_view"]["search_term"] == "ac repair near me"
-    assert got["metrics"]["clicks"] == "3"
+    assert got["metrics"]["clicks"] == 3
 
 
 # --- 6: get_geo_performance -> client.geo_performance (no leading AND) ---------------------
@@ -856,13 +873,14 @@ def test_geo_performance_query_and_row_roundtrip(fake_gads):
         "metrics.cost_micros, metrics.conversions "
         "FROM geographic_view "
         "WHERE segments.date DURING LAST_30_DAYS "
-        "ORDER BY metrics.cost_micros DESC"
+        "ORDER BY metrics.cost_micros DESC LIMIT 100"
     )
     assert "AND segments.date" not in sent
     got = env["rows"][0]["geographic_view"]
     assert got["country_criterion_id"] == "2840"
-    assert got["location_type"] == 1
-    assert env["rows"][0]["metrics"]["cost_micros"] == "5000000"
+    assert got["location_type"] == "UNKNOWN"
+    assert env["rows"][0]["metrics"]["cost_micros"] == 5000000
+    assert env["rows"][0]["metrics"]["cost"] == 5.0
 
 
 # --- 7: get_negative_keywords -> client.negative_keywords (no date range) -----------------
@@ -935,7 +953,10 @@ def test_entities_campaign_basic_query_and_row(fake_gads):
     got = env["rows"][0]["campaign"]
     assert got["id"] == "42"
     assert got["name"] == "z. Remarketing"
-    assert got["status"] == 3
+    assert got["status"] == "PAUSED"
+    # only the selected fields are present, nothing else from the campaign message
+    assert set(got) == {"id", "name", "status", "advertising_channel_type",
+                        "bidding_strategy_type"}
 
 
 def test_entities_campaign_with_ids_filter(fake_gads):
@@ -997,7 +1018,7 @@ def test_entities_ad_basic_query_and_row(fake_gads):
     )
     got = env["rows"][0]
     assert got["ad_group_ad"]["ad"]["id"] == "12345"
-    assert got["ad_group_ad"]["status"] == 2
+    assert got["ad_group_ad"]["status"] == "ENABLED"
 
 
 def test_entities_unsupported_entity_type_raises(fake_gads):

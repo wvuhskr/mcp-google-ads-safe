@@ -8,7 +8,16 @@ server startup, not mid-tool-call.
 
 keyword_research uses the Google Keyword Planner shape (geo_target_constant_ids /
 language_constant_id / keyword_plan_network / include_adult_keywords).
+
+Agencies: an optional `accounts:` map keyed by customer id gives one account its own
+advertiser_domain, blocked_terms (added to the top-level list, never replacing it),
+keyword_research and spend caps (max_daily_budget, max_cpc, max_target_cpa). Top-level
+values are the default for every account not listed. Which account's rules apply is set
+per tool call with set_account(); when an accounts map exists and no account is set, every
+getter refuses rather than fall back to the wrong client's rules.
 """
+import contextvars
+import math
 import os
 
 import yaml
@@ -23,7 +32,11 @@ _KEYWORD_RESEARCH_DEFAULTS = {
     "keyword_plan_network": "GOOGLE_SEARCH",
     "include_adult_keywords": False,
 }
-_ALLOWED_KEYS = frozenset({"blocked_terms", "advertiser_domain", "keyword_research"})
+_RULE_KEYS = frozenset({"blocked_terms", "advertiser_domain", "keyword_research"})
+_CAP_KEYS = ("max_daily_budget", "max_cpc", "max_target_cpa")
+_ALLOWED_KEYS = _RULE_KEYS | {"accounts"}
+_ALLOWED_ACCOUNT_KEYS = _RULE_KEYS | set(_CAP_KEYS)
+_ACTIVE: contextvars.ContextVar = contextvars.ContextVar("active_account", default=None)
 _ALLOWED_KEYWORD_RESEARCH_KEYS = frozenset(_KEYWORD_RESEARCH_DEFAULTS)
 
 _cache: dict | None = None
@@ -31,6 +44,7 @@ _cache: dict | None = None
 
 def _defaults() -> dict:
     return {
+        "accounts": {},
         "blocked_terms": [],
         "advertiser_domain": "",
         "keyword_research": {k: (list(v) if isinstance(v, list) else v)
@@ -95,14 +109,60 @@ def _validate_keyword_research(kr, path: str, result: dict) -> None:
         result["keyword_research"]["include_adult_keywords"] = adult
 
 
-def _validate(raw: dict, path: str) -> dict:
+def _digits(value) -> str:
+    return "".join(ch for ch in str(value) if ch in "0123456789")
+
+
+def _validate_accounts(accounts, path: str) -> dict:
+    if not isinstance(accounts, dict):
+        raise ValueError(f"{path}: 'accounts' must be a mapping of customer id to rules")
+    out = {}
+    for key, rules in accounts.items():
+        cid = _digits(key)
+        if isinstance(key, bool) or len(cid) != 10 or str(key).strip("0123456789- ") != "":
+            raise ValueError(f"{path}: accounts key {key!r} must be a 10-digit customer id")
+        if cid in out:
+            raise ValueError(f"{path}: account {cid} is listed more than once in 'accounts'")
+        where = f"{path}: accounts[{cid}]"
+        if not isinstance(rules, dict):
+            raise ValueError(f"{where} must be a mapping")
+        unknown = set(rules) - _ALLOWED_ACCOUNT_KEYS
+        if unknown:
+            raise ValueError(f"{where}: unknown key(s) {sorted(unknown)}")
+        checked = _validate({k: v for k, v in rules.items() if k in _RULE_KEYS}, where,
+                            allowed=_RULE_KEYS)
+        entry = {k: checked[k] for k in _RULE_KEYS if k in rules}
+        if "keyword_research" in rules:
+            # Keep only what this account actually set; the rest comes from the top level.
+            entry["keyword_research"] = {k: checked["keyword_research"][k]
+                                         for k in rules["keyword_research"]}
+        if any(cap in rules for cap in _CAP_KEYS) and not (
+                "max_daily_budget" in rules and "max_cpc" in rules):
+            # A missing cap would silently come from the environment number, which is
+            # written for some other currency.
+            raise ValueError(
+                f"{where}: an account with its own caps must set max_daily_budget and max_cpc "
+                "together (max_target_cpa is optional and falls back to that max_cpc)")
+        for cap in _CAP_KEYS:
+            if cap in rules:
+                value = rules[cap]
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or value <= 0):
+                    raise ValueError(f"{where}: '{cap}' must be a positive number")
+                entry[cap] = value
+        out[cid] = entry
+    return out
+
+
+def _validate(raw: dict, path: str, allowed=_ALLOWED_KEYS) -> dict:
     if not isinstance(raw, dict):
         raise ValueError(f"{path}: root must be a mapping, got {type(raw).__name__}")
-    unknown = set(raw) - _ALLOWED_KEYS
+    unknown = set(raw) - allowed
     if unknown:
         raise ValueError(f"{path}: unknown key(s) {sorted(unknown)}")
 
     result = _defaults()
+    result["accounts"] = _validate_accounts(raw["accounts"], path) if "accounts" in raw else {}
 
     if "blocked_terms" in raw:
         terms = raw["blocked_terms"]
@@ -154,24 +214,80 @@ def _reset() -> None:
     """Test-only: clear the cache so tests don't leak state into each other."""
     global _cache
     _cache = None
+    _ACTIVE.set(None)
+
+
+def set_account(customer_id) -> None:
+    """Say which account's rules apply from here on in this tool call (None clears it)."""
+    _ACTIVE.set(_digits(customer_id) or None if customer_id is not None else None)
+
+
+def active_account() -> str | None:
+    return _ACTIVE.get()
+
+
+def _rules() -> tuple[dict, dict]:
+    """(top-level defaults, the active account's overrides). With an accounts map and no
+    active account this refuses: guessing would apply one client's rules to another."""
+    if _cache is None:
+        load()
+    accounts = _cache["accounts"]
+    if not accounts:
+        return _cache, {}
+    cid = _ACTIVE.get()
+    if cid is None:
+        from .rails import RailViolation
+        raise RailViolation(
+            "advertiser.yaml has per-account rules, and this step did not say which account "
+            "it is for — refusing rather than apply the wrong account's rules",
+            code="NO_ACCOUNT_CONTEXT")
+    return _cache, accounts.get(cid, {})
 
 
 def blocked_terms() -> tuple[str, ...]:
-    if _cache is None:
-        load()
-    return tuple(_cache["blocked_terms"])
+    base, own = _rules()
+    return tuple(dict.fromkeys([*base["blocked_terms"], *own.get("blocked_terms", [])]))
 
 
 def advertiser_domain() -> str:
-    if _cache is None:
-        load()
-    return _cache["advertiser_domain"]
+    base, own = _rules()
+    return own.get("advertiser_domain", base["advertiser_domain"])
 
 
 def keyword_research() -> dict:
-    if _cache is None:
-        load()
-    return dict(_cache["keyword_research"])
+    base, own = _rules()
+    return {**base["keyword_research"], **own.get("keyword_research", {})}
+
+
+def cap(name: str):
+    """The active account's own cap (max_daily_budget | max_cpc | max_target_cpa), or None
+    when it has none and the environment default applies. An account with its own caps
+    always has budget and CPC (enforced at load); its target-CPA cap falls back to its own
+    CPC cap, never to an environment number meant for another currency."""
+    own = _rules()[1]
+    if name == "max_target_cpa" and name not in own:
+        return own.get("max_cpc")
+    return own.get(name)
+
+
+def announce_account_caps() -> None:
+    """Startup notice on stderr: which accounts carry their own spend caps. Those REPLACE
+    the environment caps for that account and may be higher, since they are in the
+    account's own currency."""
+    import sys
+    # Reads what load() already cached; server.main calls load() just before this.
+    for cid, own in sorted((_cache or {}).get("accounts", {}).items()):
+        caps = ", ".join(f"{name}={own[name]}" for name in _CAP_KEYS if name in own)
+        if caps:
+            print(f"mcp-google-ads-safe: account {cid} uses its own spend caps ({caps}); "
+                  "these replace the environment caps for that account.", file=sys.stderr)
+
+
+def caps_source() -> str:
+    own = _rules()[1]
+    if any(name in own for name in _CAP_KEYS):
+        return f"advertiser.yaml accounts section for {_ACTIVE.get()}"
+    return "environment defaults"
 
 
 def config_path(path: str | None = None) -> str:

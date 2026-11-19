@@ -1,3 +1,33 @@
+# Setup
+
+## The short way: guided setup
+
+In your terminal (on a Mac, the Terminal app), with [uv](https://docs.astral.sh/uv/) installed:
+
+```sh
+uvx --from git+https://github.com/wvuhskr/mcp-google-ads-safe mcp-google-ads-safe setup
+```
+
+It asks three questions: where the Desktop client JSON from Google Cloud is, your manager
+account number (dashes are fine; a single account with no manager uses its own number), and
+where to save the sign-in (default `~/.mcp-google-ads-safe/google-ads.yaml`). It then opens
+Google's sign-in page, saves a private sign-in file, and prints a ready-to-paste
+configuration block for Claude Desktop and a one-line command for Claude Code. That
+configuration is read-only and sets `GOOGLE_ADS_READ_SCOPE=manager`, so reports work on
+every enabled account under the manager.
+
+Setup never overwrites a saved sign-in. To sign in again and replace one, run the same
+command with `reauth` in place of `setup`; it keeps the saved manager number. Neither
+command prints or asks you to paste a token or secret. Both must be run by you in a
+terminal: they ask questions, so they cannot run through an assistant.
+
+The guided commands drive the same Desktop sign-in helper described in section 3 below,
+with the same file-safety rules. The guided wrapper itself is covered by offline tests; a
+full guided run against Google has not been recorded yet.
+
+The rest of this page is the manual route: a service account, a source install, or
+explicit account lists.
+
 # Set up from the source folder
 
 This guide prepares the recommended service-account route and provides a Desktop user sign-in fallback. A service account is an app-owned identity. Desktop sign-in is the end-to-end authorization path verified for this release; service-account setup remains an unverified alternative. The source does not create a service identity or key. The Desktop helper can create or replace one private profile that you name; the Google library handles routine access-token refresh for a valid profile. The helper passed synthetic offline tests and a bounded September 11, 2026 real Desktop sign-in/private-save check. The new profile then passed read-only account health and a real connection check from an MCP client (OpenAI Codex; any MCP client works the same way). Explicit profile replacement and post-restart health also passed; revoked-token recovery remains unverified. A bounded September 10, 2026 check did refresh one existing user-authorization profile and verify account discovery plus startup prerequisites and health for one selected advertiser; see [release readiness](release-readiness.md) for the exact limits.

@@ -226,6 +226,10 @@ def test_report_dates_must_be_iso(fake_client, bad):
 
 def test_geo_query_escapes_backslash(monkeypatch):
     seen = []
-    monkeypatch.setattr(client, "gaql", lambda q, cid, page_token=None: seen.append(q) or {"results": []})
+    monkeypatch.setattr(
+        client, "gaql",
+        lambda q, cid, page_token=None, readable=False: seen.append(q) or {
+            "rows": [], "returned_count": 0, "total_results_count": 0,
+            "pages_complete": True, "next_page_token": None, "query_limited": False})
     client.geo_targets(CID, "x\\'")
     assert "LIKE '%x\\\\\\'%'" in seen[0]
