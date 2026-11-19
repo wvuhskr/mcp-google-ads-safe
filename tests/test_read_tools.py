@@ -50,9 +50,13 @@ def test_tool_refuses_non_allowlisted_customer_before_touching_fake(
     assert exc.value.code == "NOT_ALLOWLISTED"
 
 
+# Every report says which account it came from and how that account was chosen.
+ACCOUNT = {"customer_id": TEST_CUSTOMER_ID, "selected_by": "customer_id"}
+
+
 @pytest.mark.parametrize("name,fn,args", TOOL_CASES, ids=_IDS)
 def test_tool_returns_fake_envelope_for_allowlisted_customer(fake_client, name, fn, args):
-    assert fn(*args, customer_id=TEST_CUSTOMER_ID) == FAKE_ENVELOPE
+    assert fn(*args, customer_id=TEST_CUSTOMER_ID) == {**FAKE_ENVELOPE, "account": ACCOUNT}
 
 
 # --- get_account_info has NO page_token param (always a single row) -----------------------
@@ -67,4 +71,5 @@ def test_get_account_info_has_no_page_token_param():
 @pytest.mark.parametrize("name,fn,args", [c for c in TOOL_CASES if c[0] != "get_account_info"],
                          ids=[c[0] for c in TOOL_CASES if c[0] != "get_account_info"])
 def test_tool_accepts_page_token_kwarg(fake_client, name, fn, args):
-    assert fn(*args, customer_id=TEST_CUSTOMER_ID, page_token="RAW1") == FAKE_ENVELOPE
+    assert fn(*args, customer_id=TEST_CUSTOMER_ID, page_token="RAW1") == {
+        **FAKE_ENVELOPE, "account": ACCOUNT}

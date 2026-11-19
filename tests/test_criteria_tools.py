@@ -373,13 +373,13 @@ def test_registered_inventory_and_call(fake_client, monkeypatch):
         "get_negative_keywords",
         "search_geo_targets",
         "get_entities",
-        "list_accounts",
+        "list_accounts", "find_accounts", "use_account", "current_account",
     } | {v[0] for v in CASES}
 
     async def check():
         inventory = await mcp.list_tools()
         assert {t.name for t in inventory} == expected
-        assert len(inventory) == 60
+        assert len(inventory) == 63
         for tool in inventory:
             json.dumps(tool.input_schema)
         monkeypatch.setattr(client, "list_accounts", lambda: [{"customer_id": CID}])
@@ -425,7 +425,7 @@ def test_list_accounts_filters(fake_gads, monkeypatch):
     fake_gads.search_responses[(CID, "")] = make_search_response(
         [
             make_row(
-                customer={
+                customer_client={
                     "id": int(CID),
                     "descriptive_name": "Test only",
                     "currency_code": "USD",

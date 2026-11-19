@@ -435,64 +435,19 @@ def test_entity_status_unsupported_entity_type_raises(fake_gads):
 
 
 # --- preflight / login-manager ancestry ------------------------------------------------
+# The startup check, account discovery and read scope are covered in test_agency_scope.py.
 
-def _fake_tree(monkeypatch, tree, login="1234567890"):
-    """tree: {manager_id: [(child_id, is_manager), ...]}. Drives the walk directly."""
-    monkeypatch.setattr(client, "gads",
-                        lambda profile=None: type("C", (), {"login_customer_id": login})())
-    monkeypatch.setattr(client, "_customer_client_children",
-                        lambda mid: [{"id": c, "manager": m} for c, m in tree.get(mid, [])])
-
-
-def test_preflight_all_descendants_present_passes(monkeypatch):
-    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "111,333")
-    _fake_tree(monkeypatch, {
-        "1234567890": [("111", False), ("222", True)],
-        "222": [("333", False)],
-    })
-    client.preflight()  # no raise
-
-
-def test_preflight_missing_id_fails_loud(monkeypatch):
-    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "111,999")  # 999 not in tree
-    _fake_tree(monkeypatch, {"1234567890": [("111", False)]})
-    with pytest.raises(rails.RailViolation) as exc:
-        client.preflight()
-    assert exc.value.code == "ANCESTRY_NOT_DESCENDANT"
-    assert "999" in str(exc.value)
-
-
-def test_preflight_truncated_depth_fails_loud_not_guess(monkeypatch):
-    # required id sits below the depth cap -> we can't confirm it -> refuse as truncated,
-    # NOT as "not a descendant".
-    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "9001")
-    _fake_tree(monkeypatch, {
-        "1234567890": [("2001", True)],
-        "2001": [("2002", True)],
-        "2002": [("2003", True)],   # 2003 sits at depth 3 == cap: not expanded
-        "2003": [("9001", False)],  # the required id, never queried
-    })
-    with pytest.raises(rails.RailViolation) as exc:
-        client.preflight()
-    assert exc.value.code == "ANCESTRY_TRUNCATED"
-
-
-def test_preflight_count_cap_fails_loud(monkeypatch):
-    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "111")
-    big = [(str(i), False) for i in range(600)]  # > 500 count cap
-    _fake_tree(monkeypatch, {"1234567890": big})
-    with pytest.raises(rails.RailViolation) as exc:
-        client.preflight()
-    assert exc.value.code == "ANCESTRY_TRUNCATED"
-
-
-def test_customer_client_children_parses_real_rows(fake_gads):
+def test_client_accounts_parses_real_rows(fake_gads):
     # proves the provider path (query -> _scan_rows -> row.customer_client) works on real protos
     row = make_row(**{"customer_client.id": 222, "customer_client.manager": True,
-                      "customer_client.level": 1})
-    fake_gads.search_responses[("777", "")] = make_search_response([row])
-    kids = client._customer_client_children("777")
-    assert kids == [{"id": "222", "manager": True}]
+                      "customer_client.level": 2, "customer_client.status": "CANCELED",
+                      "customer_client.descriptive_name": "Sub", "customer_client.hidden": True})
+    fake_gads.search_responses[("1234567890", "")] = make_search_response([row])
+    assert client._client_accounts() == [{
+        "customer_id": "222", "descriptive_name": "Sub", "currency_code": None,
+        "time_zone": None, "status": "CANCELED", "manager": True, "level": 2,
+        "test_account": False, "hidden": True}]
+    assert fake_gads.search_requests[0].customer_id == "1234567890"  # asked of the login manager
 
 
 # --- gads() factory --------------------------------------------------------------------
@@ -672,17 +627,18 @@ def test_gads_missing_or_blank_path_fails_before_file_or_loader(
 # --- list_accounts ---------------------------------------------------------------------
 
 def test_list_accounts_returns_read_allowlisted_with_name_and_currency(fake_gads, monkeypatch):
-    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "111,222")
-    fake_gads.search_responses[("111", "")] = make_search_response([make_row(**{
-        "customer.id": 111, "customer.descriptive_name": "Acct One",
-        "customer.currency_code": "USD"})])
-    fake_gads.search_responses[("222", "")] = make_search_response([make_row(**{
-        "customer.id": 222, "customer.descriptive_name": "Acct Two",
-        "customer.currency_code": "EUR"})])
+    monkeypatch.setenv("GOOGLE_ADS_READ_CUSTOMER_IDS", "111,222,333")
+    fake_gads.search_responses[("1234567890", "")] = make_search_response([
+        make_row(**{"customer_client.id": 111, "customer_client.descriptive_name": "Acct One",
+                    "customer_client.currency_code": "USD"}),
+        make_row(**{"customer_client.id": 222, "customer_client.descriptive_name": "Acct Two",
+                    "customer_client.currency_code": "EUR"})])
     by_id = {a["customer_id"]: a for a in client.list_accounts()}
     assert by_id["111"]["descriptive_name"] == "Acct One"
     assert by_id["111"]["currency_code"] == "USD"
     assert by_id["222"]["currency_code"] == "EUR"
+    assert by_id["333"] == {"customer_id": "333", "descriptive_name": None, "currency_code": None}
+    assert len(fake_gads.search_requests) == 1  # one query, not one per account
 
 
 # ==========================================================================================
